@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from interpreter.error_codes import ErrorCode
 from interpreter.exceptions import InterpreterError
-from interpreter.input_model import Program
+from interpreter.input_model import ClassDef, Method, Program
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,35 @@ class Interpreter:
                 error_code=ErrorCode.INT_STRUCTURE, message="Invalid SOL-XML structure"
             ) from e
 
+    def _require_program(self) -> Program:
+        if self.current_program is None:
+            raise InterpreterError(ErrorCode.GENERAL_OTHER, "No program loaded.")
+        return self.current_program
+
+    def _find_main_class(self, program: Program) -> ClassDef:
+        for class_def in program.classes:
+            if class_def.name == "Main":
+                return class_def
+        raise InterpreterError(ErrorCode.SEM_MAIN, "Missing class Main.")
+
+    def _find_run_method(self, main_class: ClassDef) -> Method:
+        for method in main_class.methods:
+            if method.selector == "run":
+                return method
+        raise InterpreterError(ErrorCode.SEM_MAIN, "Missing instance method run in class Main.")
+
     def execute(self, input_io: TextIO) -> None:
         """
         Executes the currently loaded program, using the provided input stream as standard input.
         """
         logger.info("Executing program")
-        # TODO: Your logic goes here.
+        # MY CODE
+        program = self._require_program()
+        main_class = self._find_main_class(program)
+        run_method = self._find_run_method(main_class)
+
+        main_instance = {"class_name": main_class.name}
+        logger.info("Instantiated %s", main_instance["class_name"])
+        logger.info("Simulating call to %s>>%s", main_class.name, run_method.selector)
+
+        return
