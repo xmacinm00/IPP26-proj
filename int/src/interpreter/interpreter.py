@@ -20,7 +20,7 @@ from interpreter.exceptions import InterpreterError
 from interpreter.input_model import ClassDef, Method, Program
 
 logger = logging.getLogger(__name__)
-
+BUILTIN_CLASSES = {"Object", "Nil", "True", "False", "Integer", "String", "Block"}
 
 class Interpreter:
     """
@@ -82,6 +82,29 @@ class Interpreter:
 
         return class_table
 
+    def _validate_inheritance(self, class_table: dict[str, ClassDef]) -> None:
+        known_classes = BUILTIN_CLASSES | set(class_table.keys())
+
+        for class_def in class_table.values():
+            if class_def.parent not in known_classes:
+                raise InterpreterError(
+                    ErrorCode.SEM_ERROR,
+                    f"Undefined parent class: {class_def.parent}",
+                )
+
+        for class_name in class_table:
+            visited: set[str] = set()
+            current = class_name
+
+            while current in class_table:
+                if current in visited:
+                    raise InterpreterError(
+                        ErrorCode.SEM_ERROR,
+                        f"Inheritance cycle detected at class: {class_name}",
+                    )
+                visited.add(current)
+                current = class_table[current].parent
+
     def execute(self, input_io: TextIO) -> None:
         """
         Executes the currently loaded program, using the provided input stream as standard input.
@@ -90,6 +113,7 @@ class Interpreter:
         # MY CODE
         program = self._require_program()
         class_table = self._build_class_table(program)
+        self._validate_inheritance(class_table)
         main_class = class_table.get("Main")
         if main_class is None:
             raise InterpreterError(ErrorCode.SEM_MAIN, "Missing class Main.")
