@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from interpreter.error_codes import ErrorCode
 from interpreter.exceptions import InterpreterError
 from interpreter.input_model import ClassDef, Method, Program
+from interpreter.runtime import RuntimeObject
 
 logger = logging.getLogger(__name__)
 BUILTIN_CLASSES = {"Object", "Nil", "True", "False", "Integer", "String", "Block"}
@@ -105,6 +106,28 @@ class Interpreter:
                 visited.add(current)
                 current = class_table[current].parent
 
+    def _lookup_method(
+            self,
+            class_name: str,
+            selector: str,
+            class_table: dict[str, ClassDef],
+    ) -> Method:
+        current = class_name
+
+        while current in class_table:
+            class_def = class_table[current]
+
+            for method in class_def.methods:
+                if method.selector == selector:
+                    return method
+
+            current = class_def.parent
+
+        raise InterpreterError(
+            ErrorCode.INT_DNU,
+            f"Method {selector} not found for class {class_name}",
+        )
+
     def execute(self, input_io: TextIO) -> None:
         """
         Executes the currently loaded program, using the provided input stream as standard input.
@@ -118,10 +141,10 @@ class Interpreter:
         if main_class is None:
             raise InterpreterError(ErrorCode.SEM_MAIN, "Missing class Main.")
 
-        run_method = self._find_run_method(main_class)
+        run_method = self._lookup_method("Main", "run", class_table)
 
-        main_instance = {"class_name": main_class.name}
-        logger.info("Instantiated %s", main_instance["class_name"])
+        main_instance = RuntimeObject(class_def=main_class)
+        logger.info("Instantiated %s", main_instance.class_def.name)
         logger.info("Simulating call to %s>>%s", main_class.name, run_method.selector)
 
         return

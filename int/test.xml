@@ -1,18 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <program language="SOL26">
-  <class name="A" parent="B">
+  <class name="A" parent="Object">
     <method selector="foo">
       <block arity="0"></block>
     </method>
   </class>
-  <class name="B" parent="A">
-    <method selector="bar">
-      <block arity="0"></block>
-    </method>
-  </class>
   <class name="Main" parent="A">
-    <method selector="run">
-      <block arity="0"></block>
-    </method>
   </class>
 </program>
