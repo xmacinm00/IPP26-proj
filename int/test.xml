@@ -1,7 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <program language="SOL26">
-  <class name="Other" parent="Object">
+  <class name="Main" parent="Object">
     <method selector="run">
+      <block arity="0"></block>
+    </method>
+  </class>
+  <class name="Main" parent="Object">
+    <method selector="foo">
       <block arity="0"></block>
     </method>
   </class>

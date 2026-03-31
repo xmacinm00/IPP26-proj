@@ -69,6 +69,19 @@ class Interpreter:
                 return method
         raise InterpreterError(ErrorCode.SEM_MAIN, "Missing instance method run in class Main.")
 
+    def _build_class_table(self, program: Program) -> dict[str, ClassDef]:
+        class_table: dict[str, ClassDef] = {}
+
+        for class_def in program.classes:
+            if class_def.name in class_table:
+                raise InterpreterError(
+                    ErrorCode.SEM_ERROR,
+                    f"Duplicate class definition: {class_def.name}",
+                )
+            class_table[class_def.name] = class_def
+
+        return class_table
+
     def execute(self, input_io: TextIO) -> None:
         """
         Executes the currently loaded program, using the provided input stream as standard input.
@@ -76,7 +89,11 @@ class Interpreter:
         logger.info("Executing program")
         # MY CODE
         program = self._require_program()
-        main_class = self._find_main_class(program)
+        class_table = self._build_class_table(program)
+        main_class = class_table.get("Main")
+        if main_class is None:
+            raise InterpreterError(ErrorCode.SEM_MAIN, "Missing class Main.")
+
         run_method = self._find_run_method(main_class)
 
         main_instance = {"class_name": main_class.name}
