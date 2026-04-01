@@ -15,3 +15,16 @@ class RuntimeObject:
 @dataclass(slots=True)
 class RuntimeNil:
     """Represents the built-in nil object."""
+
+@dataclass(slots=True)
+class RuntimeInteger:
+    """Represents a built-in integer object."""
+
+    value: int
+
+
+@dataclass(slots=True)
+class RuntimeString:
+    """Represents a built-in string object."""
+
+    value: str

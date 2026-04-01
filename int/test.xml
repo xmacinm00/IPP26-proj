@@ -5,9 +5,11 @@
       <block arity="0">
         <assign order="1">
           <var name="x"/>
-          <expr>
-            <literal class="Integer" value="1"/>
-          </expr>
+          <expr><literal class="Integer" value="1"/></expr>
+        </assign>
+        <assign order="2">
+          <var name="y"/>
+          <expr><var name="x"/></expr>
         </assign>
       </block>
     </method>

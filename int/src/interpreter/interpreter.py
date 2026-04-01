@@ -15,10 +15,11 @@ from lxml import etree
 from lxml.etree import ParseError
 from pydantic import ValidationError
 
+from interpreter.environment import RuntimeEnvironment, RuntimeValue
 from interpreter.error_codes import ErrorCode
 from interpreter.exceptions import InterpreterError
-from interpreter.input_model import Block, ClassDef, Method, Program
-from interpreter.runtime import RuntimeNil, RuntimeObject
+from interpreter.input_model import Block, ClassDef, Expr, Literal, Method, Program
+from interpreter.runtime import RuntimeInteger, RuntimeNil, RuntimeObject, RuntimeString
 
 logger = logging.getLogger(__name__)
 BUILTIN_CLASSES = {"Object", "Nil", "True", "False", "Integer", "String", "Block"}
@@ -128,19 +129,54 @@ class Interpreter:
             f"Method {selector} not found for class {class_name}",
         )
 
-    def _execute_block(self, block: Block) -> RuntimeNil:
+    def _execute_block(self, block: Block) -> RuntimeValue:
         if block.arity != 0:
             raise InterpreterError(
                 ErrorCode.INT_OTHER,
                 f"Expected zero-arity block in current execution slice, got {block.arity}",
             )
 
-        if len(block.assigns) == 0:
+        env = RuntimeEnvironment()
+        last_value: RuntimeValue = RuntimeNil()
+
+        for assign in block.assigns:
+            value = self._evaluate_expr(assign.expr, env)
+            env.values[assign.target.name] = value
+            last_value = value
+
+        return last_value
+
+    def _evaluate_literal(self, literal: Literal) -> RuntimeValue:
+        if literal.class_id == "Nil":
             return RuntimeNil()
+
+        if literal.class_id == "Integer":
+            return RuntimeInteger(int(literal.value))
+
+        if literal.class_id == "String":
+            return RuntimeString(literal.value)
 
         raise InterpreterError(
             ErrorCode.INT_OTHER,
-            "Assignments are not supported in the current execution slice.",
+            f"Literal class {literal.class_id} is not supported in the current execution slice.",
+        )
+
+    def _evaluate_expr(self, expr: Expr, env: RuntimeEnvironment) -> RuntimeValue:
+        if expr.literal is not None:
+            return self._evaluate_literal(expr.literal)
+
+        if expr.var is not None:
+            value = env.values.get(expr.var.name)
+            if value is None:
+                raise InterpreterError(
+                    ErrorCode.SEM_UNDEF,
+                    f"Undefined variable: {expr.var.name}",
+                )
+            return value
+
+        raise InterpreterError(
+            ErrorCode.INT_OTHER,
+            "Only literals and variables are supported in the current execution slice.",
         )
 
     def execute(self, input_io: TextIO) -> None:
@@ -148,7 +184,7 @@ class Interpreter:
         Executes the currently loaded program, using the provided input stream as standard input.
         """
         logger.info("Executing program")
-        # MY CODE
+
         program = self._require_program()
         class_table = self._build_class_table(program)
         self._validate_inheritance(class_table)
