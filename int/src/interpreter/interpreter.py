@@ -129,14 +129,20 @@ class Interpreter:
             f"Method {selector} not found for class {class_name}",
         )
 
-    def _execute_block(self, block: Block) -> RuntimeValue:
+    def _execute_block(
+            self,
+            block: Block,
+            env: RuntimeEnvironment | None = None,
+    ) -> RuntimeValue:
         if block.arity != 0:
             raise InterpreterError(
                 ErrorCode.INT_OTHER,
                 f"Expected zero-arity block in current execution slice, got {block.arity}",
             )
 
-        env = RuntimeEnvironment()
+        if env is None:
+            env = RuntimeEnvironment()
+
         last_value: RuntimeValue = RuntimeNil()
 
         for assign in block.assigns:
@@ -193,8 +199,10 @@ class Interpreter:
             raise InterpreterError(ErrorCode.SEM_MAIN, "Missing class Main.")
 
         run_method = self._lookup_method("Main", "run", class_table)
-        _ = self._execute_block(run_method.block)
         main_instance = RuntimeObject(class_def=main_class)
+
+        method_env = RuntimeEnvironment(values={"self": main_instance})
+        _ = self._execute_block(run_method.block, method_env)
         logger.info("Instantiated %s", main_instance.class_def.name)
         logger.info("Simulating call to %s>>%s", main_class.name, run_method.selector)
 
