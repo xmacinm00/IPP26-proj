@@ -11,3 +11,7 @@ class RuntimeObject:
 
     class_def: ClassDef
     attributes: dict[str, object] = field(default_factory=dict)
+
+@dataclass(slots=True)
+class RuntimeNil:
+    """Represents the built-in nil object."""

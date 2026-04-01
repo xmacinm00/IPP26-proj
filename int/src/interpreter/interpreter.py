@@ -17,8 +17,8 @@ from pydantic import ValidationError
 
 from interpreter.error_codes import ErrorCode
 from interpreter.exceptions import InterpreterError
-from interpreter.input_model import ClassDef, Method, Program
-from interpreter.runtime import RuntimeObject
+from interpreter.input_model import Block, ClassDef, Method, Program
+from interpreter.runtime import RuntimeNil, RuntimeObject
 
 logger = logging.getLogger(__name__)
 BUILTIN_CLASSES = {"Object", "Nil", "True", "False", "Integer", "String", "Block"}
@@ -128,6 +128,21 @@ class Interpreter:
             f"Method {selector} not found for class {class_name}",
         )
 
+    def _execute_block(self, block: Block) -> RuntimeNil:
+        if block.arity != 0:
+            raise InterpreterError(
+                ErrorCode.INT_OTHER,
+                f"Expected zero-arity block in current execution slice, got {block.arity}",
+            )
+
+        if len(block.assigns) == 0:
+            return RuntimeNil()
+
+        raise InterpreterError(
+            ErrorCode.INT_OTHER,
+            "Assignments are not supported in the current execution slice.",
+        )
+
     def execute(self, input_io: TextIO) -> None:
         """
         Executes the currently loaded program, using the provided input stream as standard input.
@@ -142,7 +157,7 @@ class Interpreter:
             raise InterpreterError(ErrorCode.SEM_MAIN, "Missing class Main.")
 
         run_method = self._lookup_method("Main", "run", class_table)
-
+        _ = self._execute_block(run_method.block)
         main_instance = RuntimeObject(class_def=main_class)
         logger.info("Instantiated %s", main_instance.class_def.name)
         logger.info("Simulating call to %s>>%s", main_class.name, run_method.selector)
