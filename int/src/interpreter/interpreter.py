@@ -15,6 +15,7 @@ from lxml import etree
 from lxml.etree import ParseError
 from pydantic import ValidationError
 
+from interpreter.context import ExecutionContext
 from interpreter.environment import RuntimeEnvironment, RuntimeValue
 from interpreter.error_codes import ErrorCode
 from interpreter.exceptions import InterpreterError
@@ -125,10 +126,11 @@ class Interpreter:
         )
 
     def _execute_block(
-        self,
-        block: Block,
-        env: RuntimeEnvironment | None = None,
-        arguments: list[RuntimeValue] | None = None,
+            self,
+            block: Block,
+            env: RuntimeEnvironment | None = None,
+            arguments: list[RuntimeValue] | None = None,
+            context: ExecutionContext | None = None,
     ) -> RuntimeValue:
         if env is None:
             env = RuntimeEnvironment()
@@ -148,7 +150,7 @@ class Interpreter:
         last_value: RuntimeValue = RuntimeNil()
 
         for assign in block.assigns:
-            value = self._evaluate_expr(assign.expr, env)
+            value = self._evaluate_expr(assign.expr, env, context)
             env.values[assign.target.name] = value
             last_value = value
 
@@ -169,7 +171,12 @@ class Interpreter:
             f"Literal class {literal.class_id} is not supported in the current execution slice.",
         )
 
-    def _evaluate_expr(self, expr: Expr, env: RuntimeEnvironment) -> RuntimeValue:
+    def _evaluate_expr(
+            self,
+            expr: Expr,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
         if expr.block is not None:
             return RuntimeBlock(block=expr.block, captured_env=env)
 
@@ -186,21 +193,30 @@ class Interpreter:
             return value
 
         if expr.send is not None:
-            return self._evaluate_send(expr.send, env)
+            return self._evaluate_send(expr.send, env,context)
 
         raise InterpreterError(
             ErrorCode.INT_OTHER,
             "Only literals and variables are supported in the current execution slice.",
         )
 
-    def _evaluate_send(self, send: Send, env: RuntimeEnvironment) -> RuntimeValue:
-        receiver = self._evaluate_expr(send.receiver, env)
+    def _evaluate_send(
+            self,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        receiver = self._evaluate_expr(send.receiver, env, context)
 
-        if isinstance(receiver, (RuntimeString, RuntimeInteger)):
-            return self._evaluate_builtin_send(receiver, send, env)
+        # Detect if receiver is "super"
+        is_super_send = (
+                send.receiver.var is not None
+                and send.receiver.var.name == "super"
+        )
 
-        if isinstance(receiver, RuntimeBlock):
-            return self._evaluate_builtin_send(receiver, send, env)
+        # Built-ins for primitives + blocks
+        if isinstance(receiver, (RuntimeString, RuntimeInteger, RuntimeBlock)):
+            return self._evaluate_builtin_send(receiver, send, env, context)
 
         if not isinstance(receiver, RuntimeObject):
             raise InterpreterError(
@@ -208,16 +224,58 @@ class Interpreter:
                 "Only sends to supported receivers are allowed in the current execution slice.",
             )
 
+        if is_super_send:
+            if context is None:
+                raise InterpreterError(
+                    ErrorCode.INT_OTHER,
+                    "Missing execution context for super send.",
+                )
+
+            argument_values = [
+                self._evaluate_expr(arg.expr, env, context)
+                for arg in send.args
+            ]
+
+            method, owner_class_name = self._lookup_super_method(
+                context.current_class_name,
+                send.selector,
+            )
+
+            method_env = RuntimeEnvironment(values={"self": receiver, "super": receiver})
+            method_context = ExecutionContext(current_class_name=owner_class_name)
+
+            return self._execute_block(
+                method.block,
+                method_env,
+                argument_values,
+                method_context,
+            )
+
         try:
-            method = self._lookup_method(receiver.class_def.name, send.selector, self.class_table)
+            method = self._lookup_method(
+                receiver.class_def.name,
+                send.selector,
+                self.class_table,
+            )
         except InterpreterError as e:
             if e.error_code == ErrorCode.INT_DNU:
-                return self._evaluate_builtin_send(receiver, send, env)
+                return self._evaluate_builtin_send(receiver, send, env, context)
             raise
 
-        argument_values = [self._evaluate_expr(arg.expr, env) for arg in send.args]
-        method_env = RuntimeEnvironment(values={"self": receiver})
-        return self._execute_block(method.block, method_env, argument_values)
+        argument_values = [
+            self._evaluate_expr(arg.expr, env, context)
+            for arg in send.args
+        ]
+
+        method_env = RuntimeEnvironment(values={"self": receiver, "super": receiver})
+        method_context = ExecutionContext(current_class_name=receiver.class_def.name)
+
+        return self._execute_block(
+            method.block,
+            method_env,
+            argument_values,
+            method_context,
+        )
 
     def _validate_method_arities(self) -> None:
         for class_def in self.class_table.values():
@@ -234,8 +292,9 @@ class Interpreter:
             receiver: RuntimeValue,
             send: Send,
             env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
     ) -> RuntimeValue:
-        argument_values = [self._evaluate_expr(arg.expr, env) for arg in send.args]
+        argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
 
         if isinstance(receiver, RuntimeBlock):
             if receiver.block.arity == 0:
@@ -250,7 +309,7 @@ class Interpreter:
                 )
 
             block_env = RuntimeEnvironment(values=dict(receiver.captured_env.values))
-            return self._execute_block(receiver.block, block_env, argument_values)
+            return self._execute_block(receiver.block, block_env, argument_values, context)
 
         if isinstance(receiver, RuntimeString) and send.selector == "print":
             if len(argument_values) != 0:
@@ -282,6 +341,32 @@ class Interpreter:
             f"Method {send.selector} not found for built-in receiver.",
         )
 
+    def _lookup_super_method(
+            self,
+            current_class_name: str,
+            selector: str,
+    ) -> tuple[Method, str]:
+        current_class = self.class_table.get(current_class_name)
+        if current_class is None:
+            raise InterpreterError(
+                ErrorCode.INT_OTHER,
+                f"Current class {current_class_name} not found during super lookup.",
+            )
+
+        current = current_class.parent
+
+        while current in self.class_table:
+            class_def = self.class_table[current]
+            for method in class_def.methods:
+                if method.selector == selector:
+                    return method, class_def.name
+            current = class_def.parent
+
+        raise InterpreterError(
+            ErrorCode.INT_DNU,
+            f"Method {selector} not found for super in class {current_class_name}.",
+        )
+
     def execute(self, input_io: TextIO) -> None:
         """
         Executes the currently loaded program, using the provided input stream as standard input.
@@ -308,8 +393,9 @@ class Interpreter:
 
         main_instance = RuntimeObject(class_def=main_class)
 
-        method_env = RuntimeEnvironment(values={"self": main_instance})
-        _ = self._execute_block(run_method.block, method_env)
+        method_env = RuntimeEnvironment(values={"self": main_instance, "super": main_instance})
+        method_context = ExecutionContext(current_class_name=main_class.name)
+        _ = self._execute_block(run_method.block, method_env, context=method_context)
         logger.info("Instantiated %s", main_instance.class_def.name)
         logger.info("Simulating call to %s>>%s", main_class.name, run_method.selector)
 
