@@ -4,8 +4,16 @@
     <method selector="run">
       <block arity="0">
         <assign order="1">
-          <var name="x"/>
-          <expr><var name="self"/></expr>
+          <var name="y"/>
+          <expr>
+            <send selector="print">
+              <expr>
+                <send selector="asString">
+                  <expr><var name="self"/></expr>
+                </send>
+              </expr>
+            </send>
+          </expr>
         </assign>
       </block>
     </method>

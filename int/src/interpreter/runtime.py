@@ -22,7 +22,6 @@ class RuntimeInteger:
 
     value: int
 
-
 @dataclass(slots=True)
 class RuntimeString:
     """Represents a built-in string object."""
