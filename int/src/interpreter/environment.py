@@ -2,9 +2,21 @@
 
 from dataclasses import dataclass, field
 
-from interpreter.runtime import RuntimeInteger, RuntimeNil, RuntimeObject, RuntimeString
+from interpreter.runtime import (
+    RuntimeBlock,
+    RuntimeInteger,
+    RuntimeNil,
+    RuntimeObject,
+    RuntimeString,
+)
 
-type RuntimeValue = RuntimeObject | RuntimeNil | RuntimeInteger | RuntimeString
+type RuntimeValue = (
+        RuntimeObject
+        | RuntimeNil
+        | RuntimeInteger
+        | RuntimeString
+        | RuntimeBlock
+)
 
 
 @dataclass(slots=True)

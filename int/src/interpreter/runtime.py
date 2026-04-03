@@ -1,9 +1,12 @@
 """Runtime data structures for the SOL26 interpreter."""
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from interpreter.input_model import ClassDef
+from interpreter.input_model import Block, ClassDef
 
+if TYPE_CHECKING:
+    from interpreter.environment import RuntimeEnvironment
 
 @dataclass(slots=True)
 class RuntimeObject:
@@ -27,3 +30,10 @@ class RuntimeString:
     """Represents a built-in string object."""
 
     value: str
+
+@dataclass(slots=True)
+class RuntimeBlock:
+    """Represents a block object together with its captured environment."""
+
+    block: Block
+    captured_env: RuntimeEnvironment

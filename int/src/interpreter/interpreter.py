@@ -19,7 +19,13 @@ from interpreter.environment import RuntimeEnvironment, RuntimeValue
 from interpreter.error_codes import ErrorCode
 from interpreter.exceptions import InterpreterError
 from interpreter.input_model import Block, ClassDef, Expr, Literal, Method, Program, Send
-from interpreter.runtime import RuntimeInteger, RuntimeNil, RuntimeObject, RuntimeString
+from interpreter.runtime import (
+    RuntimeBlock,
+    RuntimeInteger,
+    RuntimeNil,
+    RuntimeObject,
+    RuntimeString,
+)
 
 logger = logging.getLogger(__name__)
 BUILTIN_CLASSES = {"Object", "Nil", "True", "False", "Integer", "String", "Block"}
@@ -164,6 +170,9 @@ class Interpreter:
         )
 
     def _evaluate_expr(self, expr: Expr, env: RuntimeEnvironment) -> RuntimeValue:
+        if expr.block is not None:
+            return RuntimeBlock(block=expr.block, captured_env=env)
+
         if expr.literal is not None:
             return self._evaluate_literal(expr.literal)
 
@@ -188,6 +197,9 @@ class Interpreter:
         receiver = self._evaluate_expr(send.receiver, env)
 
         if isinstance(receiver, (RuntimeString, RuntimeInteger)):
+            return self._evaluate_builtin_send(receiver, send, env)
+
+        if isinstance(receiver, RuntimeBlock):
             return self._evaluate_builtin_send(receiver, send, env)
 
         if not isinstance(receiver, RuntimeObject):
@@ -224,6 +236,21 @@ class Interpreter:
             env: RuntimeEnvironment,
     ) -> RuntimeValue:
         argument_values = [self._evaluate_expr(arg.expr, env) for arg in send.args]
+
+        if isinstance(receiver, RuntimeBlock):
+            if receiver.block.arity == 0:
+                expected_selector = "value"
+            else:
+                expected_selector = ":".join(["value"] * receiver.block.arity) + ":"
+
+            if send.selector != expected_selector:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Block.",
+                )
+
+            block_env = RuntimeEnvironment(values=dict(receiver.captured_env.values))
+            return self._execute_block(receiver.block, block_env, argument_values)
 
         if isinstance(receiver, RuntimeString) and send.selector == "print":
             if len(argument_values) != 0:

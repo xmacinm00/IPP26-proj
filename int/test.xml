@@ -4,14 +4,33 @@
     <method selector="run">
       <block arity="0">
         <assign order="1">
-          <var name="y"/>
+          <var name="x"/>
+          <expr><literal class="String" value="cap"/></expr>
+        </assign>
+        <assign order="2">
+          <var name="b"/>
+          <expr>
+            <block arity="0">
+              <assign order="1">
+                <var name="y"/>
+                <expr><var name="x"/></expr>
+              </assign>
+            </block>
+          </expr>
+        </assign>
+        <assign order="3">
+          <var name="s"/>
+          <expr>
+            <send selector="value">
+              <expr><var name="b"/></expr>
+            </send>
+          </expr>
+        </assign>
+        <assign order="4">
+          <var name="p"/>
           <expr>
             <send selector="print">
-              <expr>
-                <send selector="asString">
-                  <expr><var name="self"/></expr>
-                </send>
-              </expr>
+              <expr><var name="s"/></expr>
             </send>
           </expr>
         </assign>
