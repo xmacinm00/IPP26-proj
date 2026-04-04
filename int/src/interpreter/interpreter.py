@@ -452,25 +452,61 @@ class Interpreter:
     ) -> RuntimeValue:
         argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
 
-        if send.selector != "new" or len(argument_values) != 0:
+        if send.selector == "new":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.SEM_UNDEF,
+                    f"Unsupported class-side message {send.selector} for class {receiver.name}.",
+                )
+
+            if receiver.name in self.class_table:
+                class_def = self.class_table[receiver.name]
+                return RuntimeObject(class_def=class_def)
+
+            if receiver.name == "Integer":
+                return RuntimeInteger(0)
+
+            if receiver.name == "String":
+                return RuntimeString("")
+
+            raise InterpreterError(
+                ErrorCode.SEM_UNDEF,
+                f"Undefined class or unsupported built-in class: {receiver.name}",
+            )
+
+        if send.selector == "from:":
+            if len(argument_values) != 1:
+                raise InterpreterError(
+                    ErrorCode.INT_INVALID_ARG,
+                    f"Class-side msg {send.selector} expects one arg for class {receiver.name}.",
+                )
+
+            value = argument_values[0]
+
+            if receiver.name == "Integer":
+                if not isinstance(value, RuntimeInteger):
+                    raise InterpreterError(
+                        ErrorCode.INT_INVALID_ARG,
+                        "Integer from: expects an Integer argument.",
+                    )
+                return RuntimeInteger(value.value)
+
+            if receiver.name == "String":
+                if not isinstance(value, RuntimeString):
+                    raise InterpreterError(
+                        ErrorCode.INT_INVALID_ARG,
+                        "String from: expects a String argument.",
+                    )
+                return RuntimeString(value.value)
+
             raise InterpreterError(
                 ErrorCode.SEM_UNDEF,
                 f"Unsupported class-side message {send.selector} for class {receiver.name}.",
             )
 
-        if receiver.name in self.class_table:
-            class_def = self.class_table[receiver.name]
-            return RuntimeObject(class_def=class_def)
-
-        if receiver.name == "Integer":
-            return RuntimeInteger(0)
-
-        if receiver.name == "String":
-            return RuntimeString("")
-
         raise InterpreterError(
             ErrorCode.SEM_UNDEF,
-            f"Undefined class or unsupported built-in class: {receiver.name}",
+            f"Unsupported class-side message {send.selector} for class {receiver.name}.",
         )
 
     def execute(self, input_io: TextIO) -> None:

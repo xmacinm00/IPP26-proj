@@ -6,8 +6,11 @@
         <assign order="1">
           <var name="x"/>
           <expr>
-            <send selector="foo">
-              <expr><literal class="class" value="Main"/></expr>
+            <send selector="from:">
+              <expr><literal class="class" value="Integer"/></expr>
+              <arg order="1">
+                <expr><literal class="String" value="abc"/></expr>
+              </arg>
             </send>
           </expr>
         </assign>
