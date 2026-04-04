@@ -1,43 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <program language="SOL26">
-  <class name="A" parent="Object">
-    <method selector="m">
-      <block arity="0">
+  <class name="Main" parent="Object">
+    <method selector="run:">
+      <block arity="1">
+        <parameter name="x" order="1"/>
         <assign order="1">
           <var name="x"/>
-          <expr><literal class="String" value="A"/></expr>
-        </assign>
-      </block>
-    </method>
-  </class>
-  <class name="Main" parent="A">
-    <method selector="m">
-      <block arity="0">
-        <assign order="1">
-          <var name="x"/>
-          <expr><literal class="String" value="B"/></expr>
+          <expr><literal class="Integer" value="1"/></expr>
         </assign>
       </block>
     </method>
     <method selector="run">
-      <block arity="0">
-        <assign order="1">
-          <var name="s"/>
-          <expr>
-            <send selector="m">
-              <expr><var name="super"/></expr>
-            </send>
-          </expr>
-        </assign>
-        <assign order="2">
-          <var name="p"/>
-          <expr>
-            <send selector="print">
-              <expr><var name="s"/></expr>
-            </send>
-          </expr>
-        </assign>
-      </block>
+      <block arity="0"></block>
     </method>
   </class>
 </program>

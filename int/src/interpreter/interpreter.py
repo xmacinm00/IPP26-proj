@@ -125,6 +125,22 @@ class Interpreter:
             f"Method {selector} not found for class {class_name}",
         )
 
+    def _lookup_zero_arg_method_name_conflict(
+            self,
+            class_name: str,
+            selector: str,
+    ) -> bool:
+        current = class_name
+
+        while current in self.class_table:
+            class_def = self.class_table[current]
+            for method in class_def.methods:
+                if method.selector == selector:
+                    return True
+            current = class_def.parent
+
+        return False
+
     def _execute_block(
             self,
             block: Block,
@@ -258,8 +274,34 @@ class Interpreter:
                 self.class_table,
             )
         except InterpreterError as e:
-            if e.error_code == ErrorCode.INT_DNU:
+            if e.error_code != ErrorCode.INT_DNU:
+                raise
+
+            # ----- attribute read: zero-arg send -----
+            if len(send.args) == 0:
+                if send.selector in receiver.attributes:
+                    return receiver.attributes[send.selector]
+
                 return self._evaluate_builtin_send(receiver, send, env, context)
+
+            # ----- attribute write/create: one-arg send -----
+            if len(send.args) == 1:
+                attr_name = send.selector.removesuffix(":")
+                value = self._evaluate_expr(send.args[0].expr, env, context)
+
+                if self._lookup_zero_arg_method_name_conflict(
+                        receiver.class_def.name,
+                        attr_name,
+                ):
+                    raise InterpreterError(
+                        ErrorCode.INT_INST_ATTR,
+                        f"Attribute {attr_name} collides with a method.",
+                    ) from e
+
+                receiver.attributes[attr_name] = value
+                return receiver
+
+            # ----- 2+ args still unsupported as attributes -----
             raise
 
         argument_values = [
@@ -367,6 +409,33 @@ class Interpreter:
             f"Method {selector} not found for super in class {current_class_name}.",
         )
 
+    def _validate_block_parameter_assignment(self, block: Block) -> None:
+        parameter_names = {parameter.name for parameter in block.parameters}
+
+        for assign in block.assigns:
+            if assign.target.name in parameter_names:
+                raise InterpreterError(
+                    ErrorCode.SEM_COLLISION,
+                    f"Assignment to block parameter: {assign.target.name}",
+                )
+
+            self._validate_expr_parameter_assignment(assign.expr)
+
+    def _validate_expr_parameter_assignment(self, expr: Expr) -> None:
+        if expr.block is not None:
+            self._validate_block_parameter_assignment(expr.block)
+            return
+
+        if expr.send is not None:
+            self._validate_expr_parameter_assignment(expr.send.receiver)
+            for arg in expr.send.args:
+                self._validate_expr_parameter_assignment(arg.expr)
+
+    def _validate_parameter_assignments(self) -> None:
+        for class_def in self.class_table.values():
+            for method in class_def.methods:
+                self._validate_block_parameter_assignment(method.block)
+
     def execute(self, input_io: TextIO) -> None:
         """
         Executes the currently loaded program, using the provided input stream as standard input.
@@ -377,6 +446,7 @@ class Interpreter:
         self.class_table = self._build_class_table(program)
         self._validate_inheritance(self.class_table)
         self._validate_method_arities()
+        self._validate_parameter_assignments()
         main_class = self.class_table.get("Main")
         if main_class is None:
             raise InterpreterError(ErrorCode.SEM_MAIN, "Missing class Main.")

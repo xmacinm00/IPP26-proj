@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING
 from interpreter.input_model import Block, ClassDef
 
 if TYPE_CHECKING:
-    from interpreter.environment import RuntimeEnvironment
+    from interpreter.environment import RuntimeEnvironment, RuntimeValue
 
 @dataclass(slots=True)
 class RuntimeObject:
     """Represents a runtime instance of a user-defined class."""
 
     class_def: ClassDef
-    attributes: dict[str, object] = field(default_factory=dict)
+    attributes: dict[str, RuntimeValue] = field(default_factory=dict)
 
 @dataclass(slots=True)
 class RuntimeNil:
