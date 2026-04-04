@@ -22,6 +22,7 @@ from interpreter.exceptions import InterpreterError
 from interpreter.input_model import Block, ClassDef, Expr, Literal, Method, Program, Send
 from interpreter.runtime import (
     RuntimeBlock,
+    RuntimeClassRef,
     RuntimeInteger,
     RuntimeNil,
     RuntimeObject,
@@ -182,6 +183,9 @@ class Interpreter:
         if literal.class_id == "String":
             return RuntimeString(literal.value)
 
+        if literal.class_id == "class":
+            return RuntimeClassRef(literal.value)
+
         raise InterpreterError(
             ErrorCode.INT_OTHER,
             f"Literal class {literal.class_id} is not supported in the current execution slice.",
@@ -223,6 +227,9 @@ class Interpreter:
             context: ExecutionContext | None = None,
     ) -> RuntimeValue:
         receiver = self._evaluate_expr(send.receiver, env, context)
+
+        if isinstance(receiver, RuntimeClassRef):
+            return self._evaluate_class_send(receiver, send, env, context)
 
         # Detect if receiver is "super"
         is_super_send = (
@@ -435,6 +442,36 @@ class Interpreter:
         for class_def in self.class_table.values():
             for method in class_def.methods:
                 self._validate_block_parameter_assignment(method.block)
+
+    def _evaluate_class_send(
+            self,
+            receiver: RuntimeClassRef,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
+
+        if send.selector != "new" or len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.SEM_UNDEF,
+                f"Unsupported class-side message {send.selector} for class {receiver.name}.",
+            )
+
+        if receiver.name in self.class_table:
+            class_def = self.class_table[receiver.name]
+            return RuntimeObject(class_def=class_def)
+
+        if receiver.name == "Integer":
+            return RuntimeInteger(0)
+
+        if receiver.name == "String":
+            return RuntimeString("")
+
+        raise InterpreterError(
+            ErrorCode.SEM_UNDEF,
+            f"Undefined class or unsupported built-in class: {receiver.name}",
+        )
 
     def execute(self, input_io: TextIO) -> None:
         """

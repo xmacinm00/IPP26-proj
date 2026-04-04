@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from interpreter.runtime import (
     RuntimeBlock,
+    RuntimeClassRef,
     RuntimeInteger,
     RuntimeNil,
     RuntimeObject,
@@ -16,8 +17,8 @@ type RuntimeValue = (
         | RuntimeInteger
         | RuntimeString
         | RuntimeBlock
+        | RuntimeClassRef
 )
-
 
 @dataclass(slots=True)
 class RuntimeEnvironment:

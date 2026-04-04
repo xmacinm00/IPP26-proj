@@ -37,3 +37,9 @@ class RuntimeBlock:
 
     block: Block
     captured_env: RuntimeEnvironment
+
+@dataclass(slots=True)
+class RuntimeClassRef:
+    """Represents a reference to a class by name."""
+
+    name: str

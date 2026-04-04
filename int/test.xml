@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <program language="SOL26">
   <class name="Main" parent="Object">
-    <method selector="run:">
-      <block arity="1">
-        <parameter name="x" order="1"/>
+    <method selector="run">
+      <block arity="0">
         <assign order="1">
           <var name="x"/>
-          <expr><literal class="Integer" value="1"/></expr>
+          <expr>
+            <send selector="foo">
+              <expr><literal class="class" value="Main"/></expr>
+            </send>
+          </expr>
         </assign>
       </block>
-    </method>
-    <method selector="run">
-      <block arity="0"></block>
     </method>
   </class>
 </program>
