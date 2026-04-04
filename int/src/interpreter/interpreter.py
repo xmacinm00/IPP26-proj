@@ -23,10 +23,12 @@ from interpreter.input_model import Block, ClassDef, Expr, Literal, Method, Prog
 from interpreter.runtime import (
     RuntimeBlock,
     RuntimeClassRef,
+    RuntimeFalse,
     RuntimeInteger,
     RuntimeNil,
     RuntimeObject,
     RuntimeString,
+    RuntimeTrue,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ class Interpreter:
     def __init__(self) -> None:
         self.current_program: Program | None = None
         self.class_table: dict[str, ClassDef] = {}
+        self.input_io: TextIO | None = None
 
     def load_program(self, source_file_path: Path) -> None:
         """
@@ -174,6 +177,12 @@ class Interpreter:
         return last_value
 
     def _evaluate_literal(self, literal: Literal) -> RuntimeValue:
+        if literal.class_id == "True":
+            return RuntimeTrue()
+
+        if literal.class_id == "False":
+            return RuntimeFalse()
+
         if literal.class_id == "Nil":
             return RuntimeNil()
 
@@ -238,7 +247,14 @@ class Interpreter:
         )
 
         # Built-ins for primitives + blocks
-        if isinstance(receiver, (RuntimeString, RuntimeInteger, RuntimeBlock)):
+        if isinstance(receiver, (
+                RuntimeString,
+                RuntimeInteger,
+                RuntimeBlock,
+                RuntimeTrue,
+                RuntimeFalse,
+                RuntimeNil
+        )):
             return self._evaluate_builtin_send(receiver, send, env, context)
 
         if not isinstance(receiver, RuntimeObject):
@@ -344,6 +360,28 @@ class Interpreter:
             context: ExecutionContext | None = None,
     ) -> RuntimeValue:
         argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
+
+        if (isinstance(receiver, (RuntimeTrue, RuntimeFalse)) and
+                send.selector == "ifTrue:ifFalse:"):
+            if len(argument_values) != 2:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in boolean.",
+                )
+
+            true_branch = argument_values[0]
+            false_branch = argument_values[1]
+
+            if (not isinstance(true_branch, RuntimeBlock) or
+                    not isinstance(false_branch, RuntimeBlock)):
+                raise InterpreterError(
+                    ErrorCode.INT_INVALID_ARG,
+                    "ifTrue:ifFalse: expects block arguments.",
+                )
+
+            chosen = true_branch if isinstance(receiver, RuntimeTrue) else false_branch
+            block_env = RuntimeEnvironment(values=dict(chosen.captured_env.values))
+            return self._execute_block(chosen.block, block_env, context=context)
 
         if isinstance(receiver, RuntimeBlock):
             if receiver.block.arity == 0:
@@ -453,61 +491,107 @@ class Interpreter:
         argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
 
         if send.selector == "new":
-            if len(argument_values) != 0:
-                raise InterpreterError(
-                    ErrorCode.SEM_UNDEF,
-                    f"Unsupported class-side message {send.selector} for class {receiver.name}.",
-                )
-
-            if receiver.name in self.class_table:
-                class_def = self.class_table[receiver.name]
-                return RuntimeObject(class_def=class_def)
-
-            if receiver.name == "Integer":
-                return RuntimeInteger(0)
-
-            if receiver.name == "String":
-                return RuntimeString("")
-
-            raise InterpreterError(
-                ErrorCode.SEM_UNDEF,
-                f"Undefined class or unsupported built-in class: {receiver.name}",
-            )
+            return self._evaluate_class_new(receiver, argument_values)
 
         if send.selector == "from:":
-            if len(argument_values) != 1:
-                raise InterpreterError(
-                    ErrorCode.INT_INVALID_ARG,
-                    f"Class-side msg {send.selector} expects one arg for class {receiver.name}.",
-                )
+            return self._evaluate_class_from(receiver, argument_values)
 
-            value = argument_values[0]
-
-            if receiver.name == "Integer":
-                if not isinstance(value, RuntimeInteger):
-                    raise InterpreterError(
-                        ErrorCode.INT_INVALID_ARG,
-                        "Integer from: expects an Integer argument.",
-                    )
-                return RuntimeInteger(value.value)
-
-            if receiver.name == "String":
-                if not isinstance(value, RuntimeString):
-                    raise InterpreterError(
-                        ErrorCode.INT_INVALID_ARG,
-                        "String from: expects a String argument.",
-                    )
-                return RuntimeString(value.value)
-
-            raise InterpreterError(
-                ErrorCode.SEM_UNDEF,
-                f"Unsupported class-side message {send.selector} for class {receiver.name}.",
-            )
+        if send.selector == "read":
+            return self._evaluate_class_read(receiver, argument_values)
 
         raise InterpreterError(
             ErrorCode.SEM_UNDEF,
             f"Unsupported class-side message {send.selector} for class {receiver.name}.",
         )
+
+    def _evaluate_class_new(
+            self,
+            receiver: RuntimeClassRef,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.SEM_UNDEF,
+                f"Unsupported class-side message new for class {receiver.name}.",
+            )
+
+        if receiver.name in self.class_table:
+            class_def = self.class_table[receiver.name]
+            return RuntimeObject(class_def=class_def)
+
+        if receiver.name == "Integer":
+            return RuntimeInteger(0)
+
+        if receiver.name == "String":
+            return RuntimeString("")
+
+        raise InterpreterError(
+            ErrorCode.SEM_UNDEF,
+            f"Undefined class or unsupported built-in class: {receiver.name}",
+        )
+
+    def _evaluate_class_from(
+            self,
+            receiver: RuntimeClassRef,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 1:
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                f"Class-side message from: expects one argument for class {receiver.name}.",
+            )
+
+        value = argument_values[0]
+
+        if receiver.name == "Integer":
+            if not isinstance(value, RuntimeInteger):
+                raise InterpreterError(
+                    ErrorCode.INT_INVALID_ARG,
+                    "Integer from: expects an Integer argument.",
+                )
+            return RuntimeInteger(value.value)
+
+        if receiver.name == "String":
+            if not isinstance(value, RuntimeString):
+                raise InterpreterError(
+                    ErrorCode.INT_INVALID_ARG,
+                    "String from: expects a String argument.",
+                )
+            return RuntimeString(value.value)
+
+        raise InterpreterError(
+            ErrorCode.SEM_UNDEF,
+            f"Unsupported class-side message from: for class {receiver.name}.",
+        )
+
+    def _evaluate_class_read(
+            self,
+            receiver: RuntimeClassRef,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.SEM_UNDEF,
+                f"Unsupported class-side message read for class {receiver.name}.",
+            )
+
+        if receiver.name != "String":
+            raise InterpreterError(
+                ErrorCode.SEM_UNDEF,
+                f"Unsupported class-side message read for class {receiver.name}.",
+            )
+
+        if self.input_io is None:
+            raise InterpreterError(
+                ErrorCode.GENERAL_OTHER,
+                "Input stream is not available.",
+            )
+
+        line = self.input_io.readline()
+        if line.endswith("\n"):
+            line = line[:-1]
+
+        return RuntimeString(line)
 
     def execute(self, input_io: TextIO) -> None:
         """
@@ -515,6 +599,7 @@ class Interpreter:
         """
         logger.info("Executing program")
 
+        self.input_io = input_io
         program = self._require_program()
         self.class_table = self._build_class_table(program)
         self._validate_inheritance(self.class_table)

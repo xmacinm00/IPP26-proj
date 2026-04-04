@@ -6,10 +6,20 @@
         <assign order="1">
           <var name="x"/>
           <expr>
-            <send selector="from:">
-              <expr><literal class="class" value="Integer"/></expr>
+            <send selector="ifTrue:ifFalse:">
+              <expr><literal class="True" value="true"/></expr>
               <arg order="1">
-                <expr><literal class="String" value="abc"/></expr>
+                <expr><literal class="String" value="not-a-block"/></expr>
+              </arg>
+              <arg order="2">
+                <expr>
+                  <block arity="0">
+                    <assign order="1">
+                      <var name="b"/>
+                      <expr><literal class="String" value="no"/></expr>
+                    </assign>
+                  </block>
+                </expr>
               </arg>
             </send>
           </expr>

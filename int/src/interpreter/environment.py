@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 from interpreter.runtime import (
     RuntimeBlock,
     RuntimeClassRef,
+    RuntimeFalse,
     RuntimeInteger,
     RuntimeNil,
     RuntimeObject,
     RuntimeString,
+    RuntimeTrue,
 )
 
 type RuntimeValue = (
@@ -18,6 +20,8 @@ type RuntimeValue = (
         | RuntimeString
         | RuntimeBlock
         | RuntimeClassRef
+        | RuntimeTrue
+        | RuntimeFalse
 )
 
 @dataclass(slots=True)
