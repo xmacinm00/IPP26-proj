@@ -37,3 +37,17 @@ class RuntimeBlock:
 
     block: Block
     captured_env: RuntimeEnvironment
+
+@dataclass(slots=True)
+class RuntimeClassRef:
+    """Represents a reference to a class by name."""
+
+    name: str
+
+@dataclass(slots=True)
+class RuntimeTrue:
+    """Represents the built-in true object."""
+
+@dataclass(slots=True)
+class RuntimeFalse:
+    """Represents the built-in false object."""
