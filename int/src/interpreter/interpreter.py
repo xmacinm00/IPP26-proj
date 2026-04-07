@@ -300,12 +300,17 @@ class Interpreter:
             if e.error_code != ErrorCode.INT_DNU:
                 raise
 
+            try:
+                return self._evaluate_builtin_send(receiver, send, env, context)
+            except InterpreterError as builtin_err:
+                if builtin_err.error_code != ErrorCode.INT_DNU:
+                    raise
+
             # ----- attribute read: zero-arg send -----
             if len(send.args) == 0:
                 if send.selector in receiver.attributes:
                     return receiver.attributes[send.selector]
-
-                return self._evaluate_builtin_send(receiver, send, env, context)
+                raise e
 
             # ----- attribute write/create: one-arg send -----
             if len(send.args) == 1:
@@ -324,7 +329,6 @@ class Interpreter:
                 receiver.attributes[attr_name] = value
                 return receiver
 
-            # ----- 2+ args still unsupported as attributes -----
             raise
 
         argument_values = [
@@ -360,60 +364,15 @@ class Interpreter:
             context: ExecutionContext | None = None,
     ) -> RuntimeValue:
         argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
-
-        if (isinstance(receiver, (RuntimeTrue, RuntimeFalse)) and
-                send.selector == "ifTrue:ifFalse:"):
-            if len(argument_values) != 2:
-                raise InterpreterError(
-                    ErrorCode.INT_DNU,
-                    f"Method {send.selector} not found for built-in boolean.",
-                )
-
-            true_branch = argument_values[0]
-            false_branch = argument_values[1]
-
-            if (not isinstance(true_branch, RuntimeBlock) or
-                    not isinstance(false_branch, RuntimeBlock)):
+        if isinstance(receiver, RuntimeObject) and send.selector == "equalTo:":
+            if len(argument_values) != 1:
                 raise InterpreterError(
                     ErrorCode.INT_INVALID_ARG,
-                    "ifTrue:ifFalse: expects block arguments.",
+                    "Object equalTo: expects one argument.",
                 )
 
-            chosen = true_branch if isinstance(receiver, RuntimeTrue) else false_branch
-            block_env = RuntimeEnvironment(values=dict(chosen.captured_env.values))
-            return self._execute_block(chosen.block, block_env, context=context)
-
-        if isinstance(receiver, RuntimeBlock):
-            if receiver.block.arity == 0:
-                expected_selector = "value"
-            else:
-                expected_selector = ":".join(["value"] * receiver.block.arity) + ":"
-
-            if send.selector != expected_selector:
-                raise InterpreterError(
-                    ErrorCode.INT_DNU,
-                    f"Method {send.selector} not found for built-in Block.",
-                )
-
-            block_env = RuntimeEnvironment(values=dict(receiver.captured_env.values))
-            return self._execute_block(receiver.block, block_env, argument_values, context)
-
-        if isinstance(receiver, RuntimeString) and send.selector == "print":
-            if len(argument_values) != 0:
-                raise InterpreterError(
-                    ErrorCode.INT_DNU,
-                    f"Method {send.selector} not found for built-in String.",
-                )
-            print(receiver.value, end="")
-            return receiver
-
-        if isinstance(receiver, RuntimeInteger) and send.selector == "asString":
-            if len(argument_values) != 0:
-                raise InterpreterError(
-                    ErrorCode.INT_DNU,
-                    f"Method {send.selector} not found for built-in Integer.",
-                )
-            return RuntimeString(str(receiver.value))
+            other = argument_values[0]
+            return RuntimeTrue() if receiver is other else RuntimeFalse()
 
         if isinstance(receiver, RuntimeObject) and send.selector == "asString":
             if len(argument_values) != 0:
@@ -423,9 +382,236 @@ class Interpreter:
                 )
             return RuntimeString("")
 
+        if isinstance(receiver, (RuntimeTrue, RuntimeFalse)):
+            return self._evaluate_boolean_send(receiver, send, argument_values, context)
+
+        if isinstance(receiver, RuntimeInteger):
+            return self._evaluate_integer_send(receiver, send, argument_values)
+
+        if isinstance(receiver, RuntimeBlock):
+            return self._evaluate_block_send(receiver, send, argument_values, context)
+
+        if isinstance(receiver, RuntimeString):
+            return self._evaluate_string_send(receiver, send, argument_values)
+
+        if isinstance(receiver, RuntimeNil):
+            return self._evaluate_nil_send(receiver, send, argument_values)
+
         raise InterpreterError(
             ErrorCode.INT_DNU,
             f"Method {send.selector} not found for built-in receiver.",
+        )
+
+    def _evaluate_boolean_send(
+            self,
+            receiver: RuntimeTrue | RuntimeFalse,
+            send: Send,
+            argument_values: list[RuntimeValue],
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        if send.selector != "ifTrue:ifFalse:":
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                f"Method {send.selector} not found for built-in boolean.",
+            )
+
+        if len(argument_values) != 2:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                f"Method {send.selector} not found for built-in boolean.",
+            )
+
+        true_branch = argument_values[0]
+        false_branch = argument_values[1]
+
+        if not isinstance(true_branch, RuntimeBlock) or not isinstance(false_branch, RuntimeBlock):
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                "ifTrue:ifFalse: expects block arguments.",
+            )
+
+        chosen = true_branch if isinstance(receiver, RuntimeTrue) else false_branch
+        block_env = RuntimeEnvironment(values=dict(chosen.captured_env.values))
+        return self._execute_block(chosen.block, block_env, context=context)
+
+    def _evaluate_integer_send(
+            self,
+            receiver: RuntimeInteger,
+            send: Send,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if send.selector == "equalTo:":
+            return self._evaluate_integer_equal_to(receiver, argument_values)
+
+        if send.selector == "greaterThan:":
+            return self._evaluate_integer_greater_than(receiver, argument_values)
+
+        if send.selector == "plus:":
+            return self._evaluate_integer_plus(receiver, argument_values)
+
+        if send.selector == "minus:":
+            return self._evaluate_integer_minus(receiver, argument_values)
+
+        if send.selector == "multiplyBy:":
+            return self._evaluate_integer_multiply_by(receiver, argument_values)
+
+        if send.selector == "divBy:":
+            return self._evaluate_integer_div_by(receiver, argument_values)
+
+        if send.selector == "asString":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Integer.",
+                )
+            return RuntimeString(str(receiver.value))
+
+        raise InterpreterError(
+            ErrorCode.INT_DNU,
+            f"Method {send.selector} not found for built-in Integer.",
+        )
+
+    def _require_integer_argument(
+            self,
+            selector: str,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeInteger:
+        if len(argument_values) != 1:
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                f"Integer {selector} expects one Integer argument.",
+            )
+
+        other = argument_values[0]
+        if not isinstance(other, RuntimeInteger):
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                f"Integer {selector} expects an Integer argument.",
+            )
+
+        return other
+
+    def _evaluate_integer_equal_to(
+            self,
+            receiver: RuntimeInteger,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        other = self._require_integer_argument("equalTo:", argument_values)
+        return RuntimeTrue() if receiver.value == other.value else RuntimeFalse()
+
+    def _evaluate_integer_greater_than(
+            self,
+            receiver: RuntimeInteger,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        other = self._require_integer_argument("greaterThan:", argument_values)
+        return RuntimeTrue() if receiver.value > other.value else RuntimeFalse()
+
+    def _evaluate_integer_plus(
+            self,
+            receiver: RuntimeInteger,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        other = self._require_integer_argument("plus:", argument_values)
+        return RuntimeInteger(receiver.value + other.value)
+
+    def _evaluate_integer_minus(
+            self,
+            receiver: RuntimeInteger,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        other = self._require_integer_argument("minus:", argument_values)
+        return RuntimeInteger(receiver.value - other.value)
+
+    def _evaluate_integer_multiply_by(
+            self,
+            receiver: RuntimeInteger,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        other = self._require_integer_argument("multiplyBy:", argument_values)
+        return RuntimeInteger(receiver.value * other.value)
+
+    def _evaluate_integer_div_by(
+            self,
+            receiver: RuntimeInteger,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        other = self._require_integer_argument("divBy:", argument_values)
+
+        if other.value == 0:
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                "Division by zero.",
+            )
+
+        return RuntimeInteger(receiver.value // other.value)
+
+    def _evaluate_block_send(
+            self,
+            receiver: RuntimeBlock,
+            send: Send,
+            argument_values: list[RuntimeValue],
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        if receiver.block.arity == 0:
+            expected_selector = "value"
+        else:
+            expected_selector = ":".join(["value"] * receiver.block.arity) + ":"
+
+        if send.selector != expected_selector:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                f"Method {send.selector} not found for built-in Block.",
+            )
+
+        block_env = RuntimeEnvironment(values=dict(receiver.captured_env.values))
+        return self._execute_block(receiver.block, block_env, argument_values, context)
+
+    def _evaluate_string_send(
+            self,
+            receiver: RuntimeString,
+            send: Send,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if send.selector == "equalTo:":
+            if len(argument_values) != 1:
+                raise InterpreterError(
+                    ErrorCode.INT_INVALID_ARG,
+                    "String equalTo: expects one String argument.",
+                )
+
+            other = argument_values[0]
+            if not isinstance(other, RuntimeString):
+                raise InterpreterError(
+                    ErrorCode.INT_INVALID_ARG,
+                    "String equalTo: expects a String argument.",
+                )
+
+            return RuntimeTrue() if receiver.value == other.value else RuntimeFalse()
+
+        if send.selector == "print":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in String.",
+                )
+            print(receiver.value, end="")
+            return receiver
+
+        raise InterpreterError(
+            ErrorCode.INT_DNU,
+            f"Method {send.selector} not found for built-in String.",
+        )
+
+    def _evaluate_nil_send(
+            self,
+            receiver: RuntimeNil,
+            send: Send,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        raise InterpreterError(
+            ErrorCode.INT_DNU,
+            f"Method {send.selector} not found for built-in Nil.",
         )
 
     def _lookup_super_method(
