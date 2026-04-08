@@ -6,8 +6,8 @@
         <assign order="1">
           <var name="x"/>
           <expr>
-            <send selector="concatenateWith:">
-              <expr><literal class="String" value="ab"/></expr>
+            <send selector="timesRepeat:">
+              <expr><literal class="Integer" value="3"/></expr>
             </send>
           </expr>
         </assign>
