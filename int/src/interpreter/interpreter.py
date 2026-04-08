@@ -240,21 +240,17 @@ class Interpreter:
         if isinstance(receiver, RuntimeClassRef):
             return self._evaluate_class_send(receiver, send, env, context)
 
-        # Detect if receiver is "super"
-        is_super_send = (
-                send.receiver.var is not None
-                and send.receiver.var.name == "super"
-        )
-
-        # Built-ins for primitives + blocks
-        if isinstance(receiver, (
-                RuntimeString,
-                RuntimeInteger,
-                RuntimeBlock,
-                RuntimeTrue,
-                RuntimeFalse,
-                RuntimeNil
-        )):
+        if isinstance(
+                receiver,
+                (
+                        RuntimeString,
+                        RuntimeInteger,
+                        RuntimeBlock,
+                        RuntimeTrue,
+                        RuntimeFalse,
+                        RuntimeNil,
+                ),
+        ):
             return self._evaluate_builtin_send(receiver, send, env, context)
 
         if not isinstance(receiver, RuntimeObject):
@@ -263,73 +259,92 @@ class Interpreter:
                 "Only sends to supported receivers are allowed in the current execution slice.",
             )
 
-        if is_super_send:
-            if context is None:
-                raise InterpreterError(
-                    ErrorCode.INT_OTHER,
-                    "Missing execution context for super send.",
-                )
+        if self._is_super_send(send):
+            return self._evaluate_super_send(receiver, send, env, context)
 
-            argument_values = [
-                self._evaluate_expr(arg.expr, env, context)
-                for arg in send.args
-            ]
+        builtin_result = self._try_builtin_subclass_send(receiver, send, env, context)
+        if builtin_result is not None:
+            return builtin_result
 
-            method, owner_class_name = self._lookup_super_method(
-                context.current_class_name,
-                send.selector,
+        return self._evaluate_object_message_send(receiver, send, env, context)
+
+    def _is_super_send(self, send: Send) -> bool:
+        return send.receiver.var is not None and send.receiver.var.name == "super"
+
+    def _try_builtin_subclass_send(
+            self,
+            receiver: RuntimeObject,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue | None:
+        if send.selector == "identicalTo:":
+            return self._evaluate_builtin_send(receiver, send, env, context)
+
+        builtin_ancestor = self._get_builtin_ancestor(receiver.class_def.name)
+
+        if builtin_ancestor == "Integer" and receiver.integer_value is not None:
+            return self._evaluate_integer_like_object_send(receiver, send, env, context)
+
+        if builtin_ancestor == "String" and receiver.string_value is not None:
+            return self._evaluate_string_like_object_send(receiver, send, env, context)
+
+        if builtin_ancestor == "Block" and receiver.block_value is not None:
+            return self._evaluate_block_like_object_send(receiver, send, env, context)
+
+        return None
+
+    def _evaluate_super_send(
+            self,
+            receiver: RuntimeObject,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        if context is None:
+            raise InterpreterError(
+                ErrorCode.INT_OTHER,
+                "Missing execution context for super send.",
             )
 
-            method_env = RuntimeEnvironment(values={"self": receiver, "super": receiver})
-            method_context = ExecutionContext(current_class_name=owner_class_name)
+        argument_values = [
+            self._evaluate_expr(arg.expr, env, context)
+            for arg in send.args
+        ]
 
-            return self._execute_block(
-                method.block,
-                method_env,
-                argument_values,
-                method_context,
-            )
+        method, owner_class_name = self._lookup_super_method(
+            context.current_class_name,
+            send.selector,
+        )
 
+        method_env = RuntimeEnvironment(values={"self": receiver, "super": receiver})
+        method_context = ExecutionContext(current_class_name=owner_class_name)
+
+        return self._execute_block(
+            method.block,
+            method_env,
+            argument_values,
+            method_context,
+        )
+
+    def _evaluate_object_message_send(
+            self,
+            receiver: RuntimeObject,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
         try:
             method = self._lookup_method(
                 receiver.class_def.name,
                 send.selector,
                 self.class_table,
             )
-        except InterpreterError as e:
-            if e.error_code != ErrorCode.INT_DNU:
+        except InterpreterError as err:
+            if err.error_code != ErrorCode.INT_DNU:
                 raise
 
-            try:
-                return self._evaluate_builtin_send(receiver, send, env, context)
-            except InterpreterError as builtin_err:
-                if builtin_err.error_code != ErrorCode.INT_DNU:
-                    raise
-
-            # ----- attribute read: zero-arg send -----
-            if len(send.args) == 0:
-                if send.selector in receiver.attributes:
-                    return receiver.attributes[send.selector]
-                raise e
-
-            # ----- attribute write/create: one-arg send -----
-            if len(send.args) == 1:
-                attr_name = send.selector.removesuffix(":")
-                value = self._evaluate_expr(send.args[0].expr, env, context)
-
-                if self._lookup_zero_arg_method_name_conflict(
-                        receiver.class_def.name,
-                        attr_name,
-                ):
-                    raise InterpreterError(
-                        ErrorCode.INT_INST_ATTR,
-                        f"Attribute {attr_name} collides with a method.",
-                    ) from e
-
-                receiver.attributes[attr_name] = value
-                return receiver
-
-            raise
+            return self._handle_missing_object_method(receiver, send, env, context, err)
 
         argument_values = [
             self._evaluate_expr(arg.expr, env, context)
@@ -345,6 +360,45 @@ class Interpreter:
             argument_values,
             method_context,
         )
+
+    def _handle_missing_object_method(
+            self,
+            receiver: RuntimeObject,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None,
+            original_error: InterpreterError,
+    ) -> RuntimeValue:
+        try:
+            return self._evaluate_builtin_send(receiver, send, env, context)
+        except InterpreterError as builtin_err:
+            if builtin_err.error_code != ErrorCode.INT_DNU:
+                raise
+
+        if len(send.args) == 0:
+            if send.selector in receiver.attributes:
+                return receiver.attributes[send.selector]
+            raise original_error
+
+        if len(send.args) == 1:
+            attr_name = send.selector.removesuffix(":")
+            value = self._evaluate_expr(send.args[0].expr, env, context)
+
+            if self._lookup_zero_arg_method_name_conflict(
+                    receiver.class_def.name,
+                    attr_name,
+            ):
+                raise InterpreterError(
+                    ErrorCode.INT_INST_ATTR,
+                    f"Attribute {attr_name} collides with a method.",
+                ) from original_error
+
+            receiver.attributes[attr_name] = value
+            return receiver
+
+        raise original_error
+
+
 
     def _validate_method_arities(self) -> None:
         for class_def in self.class_table.values():
@@ -442,38 +496,140 @@ class Interpreter:
             argument_values: list[RuntimeValue],
             context: ExecutionContext | None = None,
     ) -> RuntimeValue:
-        if send.selector == "isBoolean":
-            if len(argument_values) != 0:
-                raise InterpreterError(
-                    ErrorCode.INT_DNU,
-                    f"Method {send.selector} not found for built-in boolean.",
-                )
-            return RuntimeTrue()
-
         if send.selector == "asString":
-            if len(argument_values) != 0:
-                raise InterpreterError(
-                    ErrorCode.INT_DNU,
-                    f"Method {send.selector} not found for built-in boolean.",
-                )
-            return RuntimeString("true" if isinstance(receiver, RuntimeTrue) else "false")
+            return self._evaluate_boolean_as_string(receiver, argument_values)
 
-        if send.selector != "ifTrue:ifFalse:":
-            raise InterpreterError(
-                ErrorCode.INT_DNU,
-                f"Method {send.selector} not found for built-in boolean.",
+        if send.selector == "isBoolean":
+            return self._evaluate_boolean_is_boolean(argument_values)
+
+        if send.selector == "not":
+            return self._evaluate_boolean_not(receiver, argument_values)
+
+        if send.selector == "and:":
+            return self._evaluate_boolean_and(receiver, argument_values, context)
+
+        if send.selector == "or:":
+            return self._evaluate_boolean_or(receiver, argument_values, context)
+
+        if send.selector == "ifTrue:ifFalse:":
+            return self._evaluate_boolean_if_true_if_false(
+                receiver,
+                argument_values,
+                context,
             )
 
+        raise InterpreterError(
+            ErrorCode.INT_DNU,
+            f"Method {send.selector} not found for built-in boolean.",
+        )
+
+    def _evaluate_boolean_as_string(
+            self,
+            receiver: RuntimeTrue | RuntimeFalse,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method asString not found for built-in boolean.",
+            )
+
+        return RuntimeString("true" if isinstance(receiver, RuntimeTrue) else "false")
+
+    def _evaluate_boolean_is_boolean(
+            self,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method isBoolean not found for built-in boolean.",
+            )
+
+        return RuntimeTrue()
+
+    def _evaluate_boolean_not(
+            self,
+            receiver: RuntimeTrue | RuntimeFalse,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method not not found for built-in boolean.",
+            )
+
+        return RuntimeFalse() if isinstance(receiver, RuntimeTrue) else RuntimeTrue()
+
+    def _evaluate_boolean_and(
+            self,
+            receiver: RuntimeTrue | RuntimeFalse,
+            argument_values: list[RuntimeValue],
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        if len(argument_values) != 1:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method and: not found for built-in boolean.",
+            )
+
+        block_value = argument_values[0]
+        if not isinstance(block_value, RuntimeBlock):
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method and: not found for built-in boolean.",
+            )
+
+        if isinstance(receiver, RuntimeFalse):
+            return RuntimeFalse()
+
+        block_env = RuntimeEnvironment(values=dict(block_value.captured_env.values))
+        return self._execute_block(block_value.block, block_env, context=context)
+
+    def _evaluate_boolean_or(
+            self,
+            receiver: RuntimeTrue | RuntimeFalse,
+            argument_values: list[RuntimeValue],
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        if len(argument_values) != 1:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method or: not found for built-in boolean.",
+            )
+
+        block_value = argument_values[0]
+        if not isinstance(block_value, RuntimeBlock):
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method or: not found for built-in boolean.",
+            )
+
+        if isinstance(receiver, RuntimeTrue):
+            return RuntimeTrue()
+
+        block_env = RuntimeEnvironment(values=dict(block_value.captured_env.values))
+        return self._execute_block(block_value.block, block_env, context=context)
+
+    def _evaluate_boolean_if_true_if_false(
+            self,
+            receiver: RuntimeTrue | RuntimeFalse,
+            argument_values: list[RuntimeValue],
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
         if len(argument_values) != 2:
             raise InterpreterError(
                 ErrorCode.INT_DNU,
-                f"Method {send.selector} not found for built-in boolean.",
+                "Method ifTrue:ifFalse: not found for built-in boolean.",
             )
 
         true_branch = argument_values[0]
         false_branch = argument_values[1]
 
-        if not isinstance(true_branch, RuntimeBlock) or not isinstance(false_branch, RuntimeBlock):
+        if (
+                not isinstance(true_branch, RuntimeBlock)
+                or not isinstance(false_branch, RuntimeBlock)
+        ):
             raise InterpreterError(
                 ErrorCode.INT_INVALID_ARG,
                 "ifTrue:ifFalse: expects block arguments.",
@@ -665,6 +821,44 @@ class Interpreter:
                 )
             return RuntimeTrue()
 
+        if send.selector == "whileTrue:":
+            if len(argument_values) != 1:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Block.",
+                )
+
+            body_block = argument_values[0]
+            if not isinstance(body_block, RuntimeBlock):
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Block.",
+                )
+
+            last_value: RuntimeValue = RuntimeNil()
+
+            while True:
+                cond_value = self._execute_block(
+                    receiver.block,
+                    receiver.captured_env,
+                    context=context
+                )
+
+                if isinstance(cond_value, RuntimeFalse):
+                    return last_value
+
+                if not isinstance(cond_value, RuntimeTrue):
+                    raise InterpreterError(
+                        ErrorCode.INT_OTHER,
+                        "whileTrue: condition must evaluate to a boolean.",
+                    )
+
+                last_value = self._execute_block(
+                    body_block.block,
+                    body_block.captured_env,
+                    context=context
+                )
+
         if receiver.block.arity == 0:
             expected_selector = "value"
         else:
@@ -676,15 +870,23 @@ class Interpreter:
                 f"Method {send.selector} not found for built-in Block.",
             )
 
-        block_env = RuntimeEnvironment(values=dict(receiver.captured_env.values))
-        return self._execute_block(receiver.block, block_env, argument_values, context)
+        return self._execute_block(
+            receiver.block,
+            receiver.captured_env,
+            argument_values,
+            context,
+        )
 
     def _evaluate_string_send(
             self,
             receiver: RuntimeString,
             send: Send,
             argument_values: list[RuntimeValue],
+            context: ExecutionContext | None = None,
     ) -> RuntimeValue:
+        if send.selector == "startsWith:endsBefore:":
+            return self._evaluate_string_starts_with_ends_before(receiver, argument_values)
+
         if send.selector == "equalTo:":
             return self._evaluate_string_equal_to(receiver, argument_values)
 
@@ -710,6 +912,38 @@ class Interpreter:
             ErrorCode.INT_DNU,
             f"Method {send.selector} not found for built-in String.",
         )
+
+    def _evaluate_string_starts_with_ends_before(
+            self,
+            receiver: RuntimeString,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 2:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method startsWith:endsBefore: not found for built-in String.",
+            )
+
+        start_value = argument_values[0]
+        end_value = argument_values[1]
+
+        if (not isinstance(start_value, RuntimeInteger) or
+                not isinstance(end_value, RuntimeInteger)):
+            return RuntimeNil()
+
+        start = start_value.value
+        end = end_value.value
+
+        if start <= 0 or end <= 0:
+            return RuntimeNil()
+
+        if end - start <= 0:
+            return RuntimeString("")
+
+        start_index = start - 1
+        end_index = end - 1
+
+        return RuntimeString(receiver.value[start_index:end_index])
 
     def _evaluate_string_equal_to(
             self,
@@ -932,13 +1166,47 @@ class Interpreter:
 
         if receiver.name in self.class_table:
             class_def = self.class_table[receiver.name]
+            builtin_ancestor = self._get_builtin_ancestor(receiver.name)
+
+            if builtin_ancestor == "Integer":
+                return RuntimeObject(class_def=class_def, integer_value=0)
+
+            if builtin_ancestor == "String":
+                return RuntimeObject(class_def=class_def, string_value="")
+
+            if builtin_ancestor == "Block":
+                empty_block = Block(arity=0, parameters=[], assigns=[])
+                empty_env = RuntimeEnvironment()
+                return RuntimeObject(
+                    class_def=class_def,
+                    block_value=RuntimeBlock(block=empty_block, captured_env=empty_env),
+                )
+
             return RuntimeObject(class_def=class_def)
+
+        if receiver.name == "Object":
+            dummy_class = ClassDef(name="Object", parent="", methods=[])
+            return RuntimeObject(class_def=dummy_class)
+
+        if receiver.name == "Nil":
+            return RuntimeNil()
+
+        if receiver.name == "True":
+            return RuntimeTrue()
+
+        if receiver.name == "False":
+            return RuntimeFalse()
 
         if receiver.name == "Integer":
             return RuntimeInteger(0)
 
         if receiver.name == "String":
             return RuntimeString("")
+
+        if receiver.name == "Block":
+            empty_block = Block(arity=0, parameters=[], assigns=[])
+            empty_env = RuntimeEnvironment()
+            return RuntimeBlock(block=empty_block, captured_env=empty_env)
 
         raise InterpreterError(
             ErrorCode.SEM_UNDEF,
@@ -957,6 +1225,37 @@ class Interpreter:
             )
 
         value = argument_values[0]
+
+        if receiver.name in self.class_table:
+            class_def = self.class_table[receiver.name]
+            builtin_ancestor = self._get_builtin_ancestor(receiver.name)
+
+            if builtin_ancestor == "Integer":
+                int_value = self._extract_integer_value(value)
+                if int_value is None:
+                    raise InterpreterError(
+                        ErrorCode.INT_INVALID_ARG,
+                        f"{receiver.name} from: expects an Integer-compatible argument.",
+                    )
+                return RuntimeObject(class_def=class_def, integer_value=int_value)
+
+            if builtin_ancestor == "String":
+                str_value = self._extract_string_value(value)
+                if str_value is None:
+                    raise InterpreterError(
+                        ErrorCode.INT_INVALID_ARG,
+                        f"{receiver.name} from: expects a String-compatible argument.",
+                    )
+                return RuntimeObject(class_def=class_def, string_value=str_value)
+
+        if receiver.name == "Nil":
+            return RuntimeNil()
+
+        if receiver.name == "True":
+            return RuntimeTrue()
+
+        if receiver.name == "False":
+            return RuntimeFalse()
 
         if receiver.name == "Integer":
             if not isinstance(value, RuntimeInteger):
@@ -1007,6 +1306,86 @@ class Interpreter:
             line = line[:-1]
 
         return RuntimeString(line)
+
+    def _get_builtin_ancestor(self, class_name: str) -> str | None:
+        current = class_name
+
+        while True:
+            if current in BUILTIN_CLASSES:
+                return current
+
+            class_def = self.class_table.get(current)
+            if class_def is None:
+                return None
+
+            current = class_def.parent
+
+    def _extract_integer_value(self, value: RuntimeValue) -> int | None:
+        if isinstance(value, RuntimeInteger):
+            return value.value
+        if isinstance(value, RuntimeObject) and value.integer_value is not None:
+            return value.integer_value
+        return None
+
+    def _extract_string_value(self, value: RuntimeValue) -> str | None:
+        if isinstance(value, RuntimeString):
+            return value.value
+        if isinstance(value, RuntimeObject) and value.string_value is not None:
+            return value.string_value
+        return None
+
+    def _evaluate_integer_like_object_send(
+            self,
+            receiver: RuntimeObject,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        assert receiver.integer_value is not None
+        argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
+
+        temp_receiver = RuntimeInteger(receiver.integer_value)
+        result = self._evaluate_integer_send(temp_receiver, send, argument_values, context)
+
+        if isinstance(result, RuntimeInteger):
+            return RuntimeObject(class_def=receiver.class_def, integer_value=result.value)
+
+        return result
+
+    def _evaluate_string_like_object_send(
+            self,
+            receiver: RuntimeObject,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        assert receiver.string_value is not None
+        argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
+
+        temp_receiver = RuntimeString(receiver.string_value)
+        result = self._evaluate_string_send(temp_receiver, send, argument_values)
+
+        if isinstance(result, RuntimeString):
+            return RuntimeObject(class_def=receiver.class_def, string_value=result.value)
+
+        return result
+
+    def _evaluate_block_like_object_send(
+            self,
+            receiver: RuntimeObject,
+            send: Send,
+            env: RuntimeEnvironment,
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        assert receiver.block_value is not None
+        argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
+
+        return self._evaluate_block_send(
+            receiver.block_value,
+            send,
+            argument_values,
+            context,
+        )
 
     def execute(self, input_io: TextIO) -> None:
         """

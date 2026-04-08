@@ -5,9 +5,44 @@
       <block arity="0">
         <assign order="1">
           <var name="x"/>
+          <expr><literal class="Integer" value="7"/></expr>
+        </assign>
+        <assign order="2">
+          <var name="b"/>
           <expr>
-            <send selector="timesRepeat:">
-              <expr><literal class="Integer" value="3"/></expr>
+            <block arity="1">
+              <parameter name="x" order="1"/>
+              <assign order="1">
+                <var name="r"/>
+                <expr><var name="x"/></expr>
+              </assign>
+            </block>
+          </expr>
+        </assign>
+        <assign order="3">
+          <var name="_"/>
+          <expr>
+            <send selector="value:">
+              <expr><var name="b"/></expr>
+              <arg order="1">
+                <expr><literal class="Integer" value="99"/></expr>
+              </arg>
+            </send>
+          </expr>
+        </assign>
+        <assign order="4">
+          <var name="s"/>
+          <expr>
+            <send selector="asString">
+              <expr><var name="x"/></expr>
+            </send>
+          </expr>
+        </assign>
+        <assign order="5">
+          <var name="_"/>
+          <expr>
+            <send selector="print">
+              <expr><var name="s"/></expr>
             </send>
           </expr>
         </assign>

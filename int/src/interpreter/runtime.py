@@ -14,6 +14,9 @@ class RuntimeObject:
 
     class_def: ClassDef
     attributes: dict[str, RuntimeValue] = field(default_factory=dict)
+    integer_value: int | None = None
+    string_value: str | None = None
+    block_value: RuntimeBlock | None = None
 
 @dataclass(slots=True)
 class RuntimeNil:
