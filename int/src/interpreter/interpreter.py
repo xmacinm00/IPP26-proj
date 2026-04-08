@@ -364,23 +364,19 @@ class Interpreter:
             context: ExecutionContext | None = None,
     ) -> RuntimeValue:
         argument_values = [self._evaluate_expr(arg.expr, env, context) for arg in send.args]
-        if isinstance(receiver, RuntimeObject) and send.selector == "equalTo:":
+
+        if send.selector == "identicalTo:":
             if len(argument_values) != 1:
                 raise InterpreterError(
                     ErrorCode.INT_INVALID_ARG,
-                    "Object equalTo: expects one argument.",
+                    "Object identicalTo: expects one argument.",
                 )
 
             other = argument_values[0]
             return RuntimeTrue() if receiver is other else RuntimeFalse()
 
-        if isinstance(receiver, RuntimeObject) and send.selector == "asString":
-            if len(argument_values) != 0:
-                raise InterpreterError(
-                    ErrorCode.INT_DNU,
-                    f"Method {send.selector} not found for built-in Object.",
-                )
-            return RuntimeString("")
+        if isinstance(receiver, RuntimeObject):
+            return self._evaluate_object_send(receiver, send, argument_values)
 
         if isinstance(receiver, (RuntimeTrue, RuntimeFalse)):
             return self._evaluate_boolean_send(receiver, send, argument_values, context)
@@ -402,6 +398,43 @@ class Interpreter:
             f"Method {send.selector} not found for built-in receiver.",
         )
 
+    def _evaluate_object_send(
+            self,
+            receiver: RuntimeObject,
+            send: Send,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if send.selector == "equalTo:":
+            if len(argument_values) != 1:
+                raise InterpreterError(
+                    ErrorCode.INT_INVALID_ARG,
+                    "Object equalTo: expects one argument.",
+                )
+
+            other = argument_values[0]
+            return RuntimeTrue() if receiver is other else RuntimeFalse()
+
+        if send.selector == "asString":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Object.",
+                )
+            return RuntimeString("")
+
+        if send.selector in {"isNumber", "isString", "isBlock", "isNil", "isBoolean"}:
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Object.",
+                )
+            return RuntimeFalse()
+
+        raise InterpreterError(
+            ErrorCode.INT_DNU,
+            f"Method {send.selector} not found for built-in Object.",
+        )
+
     def _evaluate_boolean_send(
             self,
             receiver: RuntimeTrue | RuntimeFalse,
@@ -409,6 +442,22 @@ class Interpreter:
             argument_values: list[RuntimeValue],
             context: ExecutionContext | None = None,
     ) -> RuntimeValue:
+        if send.selector == "isBoolean":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in boolean.",
+                )
+            return RuntimeTrue()
+
+        if send.selector == "asString":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in boolean.",
+                )
+            return RuntimeString("true" if isinstance(receiver, RuntimeTrue) else "false")
+
         if send.selector != "ifTrue:ifFalse:":
             raise InterpreterError(
                 ErrorCode.INT_DNU,
@@ -439,7 +488,27 @@ class Interpreter:
             receiver: RuntimeInteger,
             send: Send,
             argument_values: list[RuntimeValue],
+            context: ExecutionContext | None = None,
     ) -> RuntimeValue:
+        if send.selector == "asInteger":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Integer.",
+                )
+            return receiver
+
+        if send.selector == "isNumber":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Integer.",
+                )
+            return RuntimeTrue()
+
+        if send.selector == "timesRepeat:":
+            return self._evaluate_integer_times_repeat(receiver, argument_values, context)
+
         if send.selector == "equalTo:":
             return self._evaluate_integer_equal_to(receiver, argument_values)
 
@@ -470,6 +539,41 @@ class Interpreter:
             ErrorCode.INT_DNU,
             f"Method {send.selector} not found for built-in Integer.",
         )
+
+    def _evaluate_integer_times_repeat(
+            self,
+            receiver: RuntimeInteger,
+            argument_values: list[RuntimeValue],
+            context: ExecutionContext | None = None,
+    ) -> RuntimeValue:
+        if len(argument_values) != 1:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method timesRepeat: not found for built-in Integer.",
+            )
+
+        block_value = argument_values[0]
+        if not isinstance(block_value, RuntimeBlock):
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method timesRepeat: not found for built-in Integer.",
+            )
+
+        if receiver.value <= 0:
+            return RuntimeNil()
+
+        last_value: RuntimeValue = RuntimeNil()
+
+        for i in range(1, receiver.value + 1):
+            block_env = RuntimeEnvironment(values=dict(block_value.captured_env.values))
+            last_value = self._execute_block(
+                block_value.block,
+                block_env,
+                [RuntimeInteger(i)],
+                context,
+            )
+
+        return last_value
 
     def _require_integer_argument(
             self,
@@ -553,6 +657,14 @@ class Interpreter:
             argument_values: list[RuntimeValue],
             context: ExecutionContext | None = None,
     ) -> RuntimeValue:
+        if send.selector == "isBlock":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Block.",
+                )
+            return RuntimeTrue()
+
         if receiver.block.arity == 0:
             expected_selector = "value"
         else:
@@ -574,34 +686,135 @@ class Interpreter:
             argument_values: list[RuntimeValue],
     ) -> RuntimeValue:
         if send.selector == "equalTo:":
-            if len(argument_values) != 1:
-                raise InterpreterError(
-                    ErrorCode.INT_INVALID_ARG,
-                    "String equalTo: expects one String argument.",
-                )
+            return self._evaluate_string_equal_to(receiver, argument_values)
 
-            other = argument_values[0]
-            if not isinstance(other, RuntimeString):
-                raise InterpreterError(
-                    ErrorCode.INT_INVALID_ARG,
-                    "String equalTo: expects a String argument.",
-                )
+        if send.selector == "asInteger":
+            return self._evaluate_string_as_integer(receiver, argument_values)
 
-            return RuntimeTrue() if receiver.value == other.value else RuntimeFalse()
+        if send.selector == "concatenateWith:":
+            return self._evaluate_string_concatenate_with(receiver, argument_values)
+
+        if send.selector == "length":
+            return self._evaluate_string_length(receiver, argument_values)
+
+        if send.selector == "isString":
+            return self._evaluate_string_is_string(argument_values)
+
+        if send.selector == "asString":
+            return self._evaluate_string_as_string(receiver, argument_values)
 
         if send.selector == "print":
-            if len(argument_values) != 0:
-                raise InterpreterError(
-                    ErrorCode.INT_DNU,
-                    f"Method {send.selector} not found for built-in String.",
-                )
-            print(receiver.value, end="")
-            return receiver
+            return self._evaluate_string_print(receiver, argument_values)
 
         raise InterpreterError(
             ErrorCode.INT_DNU,
             f"Method {send.selector} not found for built-in String.",
         )
+
+    def _evaluate_string_equal_to(
+            self,
+            receiver: RuntimeString,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 1:
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                "String equalTo: expects one String argument.",
+            )
+
+        other = argument_values[0]
+        if not isinstance(other, RuntimeString):
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                "String equalTo: expects a String argument.",
+            )
+
+        return RuntimeTrue() if receiver.value == other.value else RuntimeFalse()
+
+    def _evaluate_string_as_integer(
+            self,
+            receiver: RuntimeString,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method asInteger not found for built-in String.",
+            )
+
+        try:
+            return RuntimeInteger(int(receiver.value))
+        except ValueError:
+            return RuntimeNil()
+
+    def _evaluate_string_concatenate_with(
+            self,
+            receiver: RuntimeString,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 1:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method concatenateWith: not found for built-in String.",
+            )
+
+        other = argument_values[0]
+        if not isinstance(other, RuntimeString):
+            return RuntimeNil()
+
+        return RuntimeString(receiver.value + other.value)
+
+    def _evaluate_string_length(
+            self,
+            receiver: RuntimeString,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method length not found for built-in String.",
+            )
+
+        return RuntimeInteger(len(receiver.value))
+
+    def _evaluate_string_is_string(
+            self,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method isString not found for built-in String.",
+            )
+
+        return RuntimeTrue()
+
+    def _evaluate_string_as_string(
+            self,
+            receiver: RuntimeString,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method asString not found for built-in String.",
+            )
+
+        return receiver
+
+    def _evaluate_string_print(
+            self,
+            receiver: RuntimeString,
+            argument_values: list[RuntimeValue],
+    ) -> RuntimeValue:
+        if len(argument_values) != 0:
+            raise InterpreterError(
+                ErrorCode.INT_DNU,
+                "Method print not found for built-in String.",
+            )
+
+        print(receiver.value, end="")
+        return receiver
 
     def _evaluate_nil_send(
             self,
@@ -609,6 +822,22 @@ class Interpreter:
             send: Send,
             argument_values: list[RuntimeValue],
     ) -> RuntimeValue:
+        if send.selector == "isNil":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Nil.",
+                )
+            return RuntimeTrue()
+
+        if send.selector == "asString":
+            if len(argument_values) != 0:
+                raise InterpreterError(
+                    ErrorCode.INT_DNU,
+                    f"Method {send.selector} not found for built-in Nil.",
+                )
+            return RuntimeString("nil")
+
         raise InterpreterError(
             ErrorCode.INT_DNU,
             f"Method {send.selector} not found for built-in Nil.",
