@@ -14,11 +14,17 @@
  *                  module based on its Python counterpart.
  */
 
-import { existsSync, lstatSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-import { TestReport } from "./models.js";
+import {
+  TestCaseDefinition,
+  TestCaseType,
+  TestReport,
+  UnexecutedReason,
+  UnexecutedReasonCode,
+} from "./models.js";
 
 import { pino } from "pino";
 
@@ -196,6 +202,192 @@ function parseArguments(): CliArguments {
   return args;
 }
 
+function discoverTestFiles(testsDir: string, recursive: boolean): string[] {
+  const discovered: string[] = [];
+
+  function walk(currentDir: string): void {
+    const entries = readdirSync(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const entryPath = join(currentDir, entry.name);
+
+      if (entry.isDirectory()) {
+        if (recursive) {
+          walk(entryPath);
+        }
+        continue;
+      }
+
+      if (entry.isFile() && entry.name.endsWith(".test")) {
+        discovered.push(entryPath);
+      }
+    }
+  }
+
+  walk(testsDir);
+  discovered.sort();
+  return discovered;
+}
+
+interface ParsedTestFile {
+  description: string | null;
+  category: string;
+  points: number;
+  source: string;
+  parserExitCodes: number[];
+  interpreterExitCodes: number[];
+}
+
+interface LoadTestsResult {
+  discoveredTestCases: TestCaseDefinition[];
+  unexecuted: Record<string, UnexecutedReason>;
+}
+
+function parseIntegerField(rawValue: string, fieldName: string): number {
+  const trimmed = rawValue.trim();
+  if (!/^-?\d+$/.test(trimmed)) {
+    throw new Error(`Invalid integer in ${fieldName}: ${rawValue}`);
+  }
+
+  return Number.parseInt(trimmed, 10);
+}
+
+function parseTestFile(testFilePath: string): ParsedTestFile {
+  const content = readFileSync(testFilePath, "utf8");
+  const lines = content.split(/\r?\n/);
+
+  const separatorIndex = lines.findIndex((line) => line.trim() === "");
+  if (separatorIndex < 0) {
+    throw new Error("Missing empty line separating metadata from source.");
+  }
+
+  const metadataLines = lines.slice(0, separatorIndex);
+  const sourceLines = lines.slice(separatorIndex + 1);
+  const source = sourceLines.join("\n");
+
+  let description: string | null = null;
+  let category: string | null = null;
+  let points: number | null = null;
+  const parserExitCodes: number[] = [];
+  const interpreterExitCodes: number[] = [];
+
+  for (const rawLine of metadataLines) {
+    const line = rawLine.trim();
+
+    if (line.length === 0) {
+      continue;
+    }
+
+    if (line.startsWith("***")) {
+      description = line.slice(3).trim() || null;
+      continue;
+    }
+
+    if (line.startsWith("+++")) {
+      category = line.slice(3).trim();
+      continue;
+    }
+
+    if (line.startsWith(">>>")) {
+      points = parseIntegerField(line.slice(3), ">>> points");
+      continue;
+    }
+
+    if (line.startsWith("!C!")) {
+      parserExitCodes.push(parseIntegerField(line.slice(3), "!C! exit code"));
+      continue;
+    }
+
+    if (line.startsWith("!I!")) {
+      interpreterExitCodes.push(parseIntegerField(line.slice(3), "!I! exit code"));
+      continue;
+    }
+
+    throw new Error(`Unknown metadata line: ${rawLine}`);
+  }
+
+  if (category === null || category.trim() === "") {
+    throw new Error("Missing required category (+++).");
+  }
+
+  if (points === null) {
+    throw new Error("Missing required points (>>>).");
+  }
+
+  if (source.trim() === "") {
+    throw new Error("Missing source code body.");
+  }
+
+  return {
+    description,
+    category,
+    points,
+    source,
+    parserExitCodes,
+    interpreterExitCodes,
+  };
+}
+
+function determineMinimalTestType(parsed: ParsedTestFile): TestCaseType {
+  const hasParser = parsed.parserExitCodes.length > 0;
+  const hasInterpreter = parsed.interpreterExitCodes.length > 0;
+
+  if (hasParser && hasInterpreter) {
+    return TestCaseType.COMBINED;
+  }
+
+  if (hasParser) {
+    return TestCaseType.PARSE_ONLY;
+  }
+
+  if (hasInterpreter) {
+    return TestCaseType.EXECUTE_ONLY;
+  }
+
+  throw new Error("Cannot determine test type from exit codes.");
+}
+
+function loadDiscoveredTests(testsDir: string, recursive: boolean): LoadTestsResult {
+  const testFiles = discoverTestFiles(testsDir, recursive);
+  const discoveredTestCases: TestCaseDefinition[] = [];
+  const unexecuted: Record<string, UnexecutedReason> = {};
+
+  for (const testFilePath of testFiles) {
+    const testName = basename(testFilePath, ".test");
+
+    try {
+      const parsed = parseTestFile(testFilePath);
+      const testType = determineMinimalTestType(parsed);
+
+      const testCase = new TestCaseDefinition({
+        name: testName,
+        test_type: testType,
+        description: parsed.description,
+        category: parsed.category,
+        points: parsed.points,
+        test_source_path: testFilePath,
+        expected_parser_exit_codes:
+            parsed.parserExitCodes.length > 0 ? parsed.parserExitCodes : null,
+        expected_interpreter_exit_codes:
+            parsed.interpreterExitCodes.length > 0 ? parsed.interpreterExitCodes : null,
+      });
+
+      discoveredTestCases.push(testCase);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      const reasonCode =
+          message === "Cannot determine test type from exit codes."
+              ? UnexecutedReasonCode.CANNOT_DETERMINE_TYPE
+              : UnexecutedReasonCode.MALFORMED_TEST_CASE_FILE;
+
+      unexecuted[testName] = new UnexecutedReason(reasonCode, message);
+    }
+  }
+
+  return { discoveredTestCases, unexecuted };
+}
+
 function main(): void {
   /**
    * The main entry point for the SOL26 integration testing script.
@@ -217,10 +409,14 @@ function main(): void {
     logger.level = "info";
   }
 
-  // TODO: Your code for discovering and executing the test cases goes here.
+  const loadResult = loadDiscoveredTests(args.tests_dir, args.recursive);
 
-  // Example of how to write the final report:
-  const report = new TestReport({ discovered_test_cases: [], unexecuted: {}, results: {} });
+  const report = new TestReport({
+    discovered_test_cases: loadResult.discoveredTestCases,
+    unexecuted: loadResult.unexecuted,
+    results: null,
+  });
+
   writeResult(report, args.output);
 }
 
