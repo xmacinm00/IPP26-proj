@@ -312,10 +312,43 @@ class Interpreter:
             for arg in send.args
         ]
 
-        method, owner_class_name = self._lookup_super_method(
-            context.current_class_name,
-            send.selector,
-        )
+        try:
+            method, owner_class_name = self._lookup_super_method(
+                context.current_class_name,
+                send.selector,
+            )
+        except InterpreterError as err:
+            if err.error_code != ErrorCode.INT_DNU:
+                raise
+
+            try:
+                return self._evaluate_builtin_send(receiver, send, env, context)
+            except InterpreterError as builtin_err:
+                if builtin_err.error_code != ErrorCode.INT_DNU:
+                    raise
+
+            if len(send.args) == 0:
+                if send.selector in receiver.attributes:
+                    return receiver.attributes[send.selector]
+                raise err
+
+            if len(send.args) == 1:
+                attr_name = send.selector.removesuffix(":")
+                value = argument_values[0]
+
+                if self._lookup_zero_arg_method_name_conflict(
+                        receiver.class_def.name,
+                        attr_name,
+                ):
+                    raise InterpreterError(
+                        ErrorCode.INT_INST_ATTR,
+                        f"Attribute {attr_name} collides with a method.",
+                    ) from err
+
+                receiver.attributes[attr_name] = value
+                return receiver
+
+            raise err
 
         method_env = RuntimeEnvironment(values={"self": receiver, "super": receiver})
         method_context = ExecutionContext(current_class_name=owner_class_name)
@@ -870,12 +903,20 @@ class Interpreter:
                 f"Method {send.selector} not found for built-in Block.",
             )
 
-        return self._execute_block(
+        block_env = RuntimeEnvironment(values=dict(receiver.captured_env.values))
+        result = self._execute_block(
             receiver.block,
-            receiver.captured_env,
+            block_env,
             argument_values,
             context,
         )
+
+        parameter_names = {parameter.name for parameter in receiver.block.parameters}
+        for name, value in block_env.values.items():
+            if name not in parameter_names:
+                receiver.captured_env.values[name] = value
+
+        return result
 
     def _evaluate_string_send(
             self,

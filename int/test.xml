@@ -1,48 +1,42 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <program language="SOL26">
+  <class name="A" parent="Object">
+    <method selector="a">
+      <block arity="0"></block>
+    </method>
+  </class>
+
+  <class name="B" parent="A">
+    <method selector="m">
+      <block arity="0">
+        <assign order="1">
+          <var name="x"/>
+          <expr>
+            <send selector="missing">
+              <expr><var name="super"/></expr>
+            </send>
+          </expr>
+        </assign>
+      </block>
+    </method>
+  </class>
+
   <class name="Main" parent="Object">
     <method selector="run">
       <block arity="0">
         <assign order="1">
           <var name="x"/>
-          <expr><literal class="Integer" value="7"/></expr>
+          <expr>
+            <send selector="new">
+              <expr><literal class="class" value="B"/></expr>
+            </send>
+          </expr>
         </assign>
         <assign order="2">
-          <var name="b"/>
+          <var name="y"/>
           <expr>
-            <block arity="1">
-              <parameter name="x" order="1"/>
-              <assign order="1">
-                <var name="r"/>
-                <expr><var name="x"/></expr>
-              </assign>
-            </block>
-          </expr>
-        </assign>
-        <assign order="3">
-          <var name="_"/>
-          <expr>
-            <send selector="value:">
-              <expr><var name="b"/></expr>
-              <arg order="1">
-                <expr><literal class="Integer" value="99"/></expr>
-              </arg>
-            </send>
-          </expr>
-        </assign>
-        <assign order="4">
-          <var name="s"/>
-          <expr>
-            <send selector="asString">
+            <send selector="m">
               <expr><var name="x"/></expr>
-            </send>
-          </expr>
-        </assign>
-        <assign order="5">
-          <var name="_"/>
-          <expr>
-            <send selector="print">
-              <expr><var name="s"/></expr>
             </send>
           </expr>
         </assign>
