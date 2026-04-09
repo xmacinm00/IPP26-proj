@@ -243,6 +243,109 @@ interface LoadTestsResult {
   unexecuted: Record<string, UnexecutedReason>;
 }
 
+interface FilterSets {
+  includeNames: Set<string>;
+  includeCategories: Set<string>;
+  excludeNames: Set<string>;
+  excludeCategories: Set<string>;
+}
+
+function trimmedValues(values: string[] | null): string[] {
+  if (values === null) {
+    return [];
+  }
+
+  return values.map((value) => value.trim()).filter((value) => value.length > 0);
+}
+
+function buildFilterSets(args: CliArguments): FilterSets {
+  const includeNames = new Set<string>();
+  const includeCategories = new Set<string>();
+  const excludeNames = new Set<string>();
+  const excludeCategories = new Set<string>();
+
+  for (const value of trimmedValues(args.include)) {
+    includeNames.add(value);
+    includeCategories.add(value);
+  }
+
+  for (const value of trimmedValues(args.include_test)) {
+    includeNames.add(value);
+  }
+
+  for (const value of trimmedValues(args.include_category)) {
+    includeCategories.add(value);
+  }
+
+  for (const value of trimmedValues(args.exclude)) {
+    excludeNames.add(value);
+    excludeCategories.add(value);
+  }
+
+  for (const value of trimmedValues(args.exclude_test)) {
+    excludeNames.add(value);
+  }
+
+  for (const value of trimmedValues(args.exclude_category)) {
+    excludeCategories.add(value);
+  }
+
+  return {
+    includeNames,
+    includeCategories,
+    excludeNames,
+    excludeCategories,
+  };
+}
+
+function matchesInclude(testCase: TestCaseDefinition, filters: FilterSets): boolean {
+  const hasIncludeFilters =
+      filters.includeNames.size > 0 || filters.includeCategories.size > 0;
+
+  if (!hasIncludeFilters) {
+    return true;
+  }
+
+  return (
+      filters.includeNames.has(testCase.name) ||
+      filters.includeCategories.has(testCase.category)
+  );
+}
+
+function matchesExclude(testCase: TestCaseDefinition, filters: FilterSets): boolean {
+  return (
+      filters.excludeNames.has(testCase.name) ||
+      filters.excludeCategories.has(testCase.category)
+  );
+}
+
+function applyFilters(
+    discoveredTestCases: TestCaseDefinition[],
+    existingUnexecuted: Record<string, UnexecutedReason>,
+    args: CliArguments
+): LoadTestsResult {
+  const filters = buildFilterSets(args);
+  const kept: TestCaseDefinition[] = [];
+  const unexecuted: Record<string, UnexecutedReason> = { ...existingUnexecuted };
+
+  for (const testCase of discoveredTestCases) {
+    if (!matchesInclude(testCase, filters) || matchesExclude(testCase, filters)) {
+      unexecuted[testCase.name] = new UnexecutedReason(
+          UnexecutedReasonCode.FILTERED_OUT,
+          "Test case was filtered out by include/exclude rules."
+      );
+      continue;
+    }
+
+    kept.push(testCase);
+  }
+
+  return {
+    discoveredTestCases: kept,
+    unexecuted,
+  };
+}
+
 function parseIntegerField(rawValue: string, fieldName: string): number {
   const trimmed = rawValue.trim();
   if (!/^-?\d+$/.test(trimmed)) {
@@ -266,6 +369,7 @@ function parseTestFile(testFilePath: string): ParsedTestFile {
   const source = sourceLines.join("\n");
 
   let description: string | null = null;
+  let hasDescription = false;
   let category: string | null = null;
   let points: number | null = null;
   const parserExitCodes: number[] = [];
@@ -279,16 +383,29 @@ function parseTestFile(testFilePath: string): ParsedTestFile {
     }
 
     if (line.startsWith("***")) {
+      if (hasDescription) {
+        throw new Error("Duplicate description (***).");
+      }
+
+      hasDescription = true;
       description = line.slice(3).trim() || null;
       continue;
     }
 
     if (line.startsWith("+++")) {
+      if (category !== null) {
+        throw new Error("Duplicate category (+++).");
+      }
+
       category = line.slice(3).trim();
       continue;
     }
 
     if (line.startsWith(">>>")) {
+      if (points !== null) {
+        throw new Error("Duplicate points (>>>).");
+      }
+
       points = parseIntegerField(line.slice(3), ">>> points");
       continue;
     }
@@ -328,11 +445,35 @@ function parseTestFile(testFilePath: string): ParsedTestFile {
   };
 }
 
-function determineMinimalTestType(parsed: ParsedTestFile): TestCaseType {
+function determineTestType(parsed: ParsedTestFile, testFilePath: string): TestCaseType {
   const hasParser = parsed.parserExitCodes.length > 0;
   const hasInterpreter = parsed.interpreterExitCodes.length > 0;
+  const lowerPath = testFilePath.toLowerCase();
+
+  const looksLikeXmlSource =
+      lowerPath.endsWith(".xml.test") ||
+      parsed.source.trimStart().startsWith("<?xml") ||
+      parsed.source.trimStart().startsWith("<program");
+
+  if (looksLikeXmlSource) {
+    if (hasParser) {
+      throw new Error("XML test must not declare compiler exit codes.");
+    }
+
+    if (!hasInterpreter) {
+      throw new Error("Cannot determine test type: XML test is missing interpreter exit codes.");
+    }
+
+    return TestCaseType.EXECUTE_ONLY;
+  }
 
   if (hasParser && hasInterpreter) {
+    if (parsed.parserExitCodes.length !== 1 || parsed.parserExitCodes[0] !== 0) {
+      throw new Error(
+          "Cannot determine test type: combined test requires the only compiler exit code to be 0."
+      );
+    }
+
     return TestCaseType.COMBINED;
   }
 
@@ -341,10 +482,12 @@ function determineMinimalTestType(parsed: ParsedTestFile): TestCaseType {
   }
 
   if (hasInterpreter) {
-    return TestCaseType.EXECUTE_ONLY;
+    throw new Error(
+        "Cannot determine test type: non-XML test with only interpreter exit codes is ambiguous."
+    );
   }
 
-  throw new Error("Cannot determine test type from exit codes.");
+  throw new Error("Cannot determine test type from test definition.");
 }
 
 function loadDiscoveredTests(testsDir: string, recursive: boolean): LoadTestsResult {
@@ -357,7 +500,7 @@ function loadDiscoveredTests(testsDir: string, recursive: boolean): LoadTestsRes
 
     try {
       const parsed = parseTestFile(testFilePath);
-      const testType = determineMinimalTestType(parsed);
+      const testType = determineTestType(parsed, testFilePath);
 
       const testCase = new TestCaseDefinition({
         name: testName,
@@ -376,8 +519,9 @@ function loadDiscoveredTests(testsDir: string, recursive: boolean): LoadTestsRes
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
 
-      const reasonCode =
-          message === "Cannot determine test type from exit codes."
+      const reasonCode = message.startsWith("Cannot determine test type")
+          ? UnexecutedReasonCode.CANNOT_DETERMINE_TYPE
+          : message.includes("XML test must not declare compiler exit codes")
               ? UnexecutedReasonCode.CANNOT_DETERMINE_TYPE
               : UnexecutedReasonCode.MALFORMED_TEST_CASE_FILE;
 
@@ -410,10 +554,15 @@ function main(): void {
   }
 
   const loadResult = loadDiscoveredTests(args.tests_dir, args.recursive);
+  const filteredResult = applyFilters(
+      loadResult.discoveredTestCases,
+      loadResult.unexecuted,
+      args
+  );
 
   const report = new TestReport({
-    discovered_test_cases: loadResult.discoveredTestCases,
-    unexecuted: loadResult.unexecuted,
+    discovered_test_cases: filteredResult.discoveredTestCases,
+    unexecuted: filteredResult.unexecuted,
     results: null,
   });
 
