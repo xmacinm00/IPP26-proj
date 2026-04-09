@@ -17,6 +17,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { spawn } from "node:child_process";
 
 import {
   TestCaseDefinition,
@@ -250,6 +251,13 @@ interface FilterSets {
   excludeCategories: Set<string>;
 }
 
+interface ProcessRunResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  spawnError: string | null;
+}
+
 function trimmedValues(values: string[] | null): string[] {
   if (values === null) {
     return [];
@@ -323,9 +331,8 @@ function applyFilters(
     discoveredTestCases: TestCaseDefinition[],
     existingUnexecuted: Record<string, UnexecutedReason>,
     args: CliArguments
-): LoadTestsResult {
+): Record<string, UnexecutedReason> {
   const filters = buildFilterSets(args);
-  const kept: TestCaseDefinition[] = [];
   const unexecuted: Record<string, UnexecutedReason> = { ...existingUnexecuted };
 
   for (const testCase of discoveredTestCases) {
@@ -334,16 +341,94 @@ function applyFilters(
           UnexecutedReasonCode.FILTERED_OUT,
           "Test case was filtered out by include/exclude rules."
       );
+    }
+  }
+
+  return unexecuted;
+}
+
+function runProcess(command: string, args: string[], stdin: string | null = null): Promise<ProcessRunResult> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    try {
+      const child = spawn(command, args, {
+        stdio: "pipe",
+      });
+
+      child.stdout.on("data", (chunk: Buffer | string) => {
+        stdout += chunk.toString();
+      });
+
+      child.stderr.on("data", (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+      });
+
+      child.on("error", (error: Error) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        resolve({
+          exitCode: null,
+          stdout,
+          stderr,
+          spawnError: error.message,
+        });
+      });
+
+      child.on("close", (code: number | null) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        resolve({
+          exitCode: code,
+          stdout,
+          stderr,
+          spawnError: null,
+        });
+      });
+
+      if (stdin !== null) {
+        child.stdin.write(stdin);
+      }
+
+      child.stdin.end();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      resolve({
+        exitCode: null,
+        stdout,
+        stderr,
+        spawnError: message,
+      });
+    }
+  });
+}
+
+function applyDryRun(
+    discoveredTestCases: TestCaseDefinition[],
+    existingUnexecuted: Record<string, UnexecutedReason>
+): Record<string, UnexecutedReason> {
+  const unexecuted: Record<string, UnexecutedReason> = { ...existingUnexecuted };
+
+  for (const testCase of discoveredTestCases) {
+    if (unexecuted[testCase.name] !== undefined) {
       continue;
     }
 
-    kept.push(testCase);
+    unexecuted[testCase.name] = new UnexecutedReason(
+        UnexecutedReasonCode.OTHER,
+        "Execution skipped because --dry-run was used."
+    );
   }
 
-  return {
-    discoveredTestCases: kept,
-    unexecuted,
-  };
+  return unexecuted;
 }
 
 function parseIntegerField(rawValue: string, fieldName: string): number {
@@ -532,7 +617,7 @@ function loadDiscoveredTests(testsDir: string, recursive: boolean): LoadTestsRes
   return { discoveredTestCases, unexecuted };
 }
 
-function main(): void {
+async function main(): Promise<void> {
   /**
    * The main entry point for the SOL26 integration testing script.
    * It parses command-line arguments and executes the testing process.
@@ -554,19 +639,23 @@ function main(): void {
   }
 
   const loadResult = loadDiscoveredTests(args.tests_dir, args.recursive);
-  const filteredResult = applyFilters(
+  const unexecutedAfterFiltering = applyFilters(
       loadResult.discoveredTestCases,
       loadResult.unexecuted,
       args
   );
 
+  const unexecuted = args.dry_run
+      ? applyDryRun(loadResult.discoveredTestCases, unexecutedAfterFiltering)
+      : unexecutedAfterFiltering;
+
   const report = new TestReport({
-    discovered_test_cases: filteredResult.discoveredTestCases,
-    unexecuted: filteredResult.unexecuted,
+    discovered_test_cases: loadResult.discoveredTestCases,
+    unexecuted,
     results: null,
   });
 
   writeResult(report, args.output);
 }
 
-main();
+void main();

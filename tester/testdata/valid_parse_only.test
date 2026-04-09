@@ -1,0 +1,7 @@
++++ BASIC
+>>> 1
+!C! 10
+
+class Main : Object {
+run [ | ]
+}

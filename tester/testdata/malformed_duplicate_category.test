@@ -1,0 +1,8 @@
++++ BASIC
++++ OTHER
+>>> 1
+
+class Main : Object {
+run [ | ]
+}
+
