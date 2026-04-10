@@ -835,16 +835,12 @@ async function executeSelectedTests(
 }
 
 function applyDryRun(
-    discoveredTestCases: TestCaseDefinition[],
+    selectedForExecution: TestCaseDefinition[],
     existingUnexecuted: Record<string, UnexecutedReason>
 ): Record<string, UnexecutedReason> {
   const unexecuted: Record<string, UnexecutedReason> = { ...existingUnexecuted };
 
-  for (const testCase of discoveredTestCases) {
-    if (unexecuted[testCase.name] !== undefined) {
-      continue;
-    }
-
+  for (const testCase of selectedForExecution) {
     unexecuted[testCase.name] = new UnexecutedReason(
         UnexecutedReasonCode.OTHER,
         "Execution skipped because --dry-run was used."
@@ -1107,7 +1103,7 @@ async function main(): Promise<void> {
   };
 
   const unexecuted = args.dry_run
-      ? applyDryRun(loadResult.discoveredTestCases, mergedUnexecuted)
+      ? applyDryRun(executionPreparation.selectedForExecution, mergedUnexecuted)
       : mergedUnexecuted;
 
   const report = new TestReport({
