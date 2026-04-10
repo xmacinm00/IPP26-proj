@@ -1,0 +1,11 @@
++++ BUILTIN
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+run [|
+x := true ifTrue: [| y := 'yes'. ] ifFalse: [| y := 'no'. ].
+_ := x print.
+]
+}

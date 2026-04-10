@@ -1,0 +1,8 @@
++++ PARSER
+>>> 1
+!C! 1
+
+class Main : Object {
+run [|
+x := 1.
+]

@@ -1,0 +1,11 @@
++++ OO
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+run [|
+_ := self value: 10.
+_ := ((self value) asString) print.
+]
+}

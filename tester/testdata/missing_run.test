@@ -1,7 +1,8 @@
-+++ BASIC
++++ ERROR
 >>> 1
 !C! 0
+!I! 31
 
 class Main : Object {
-run [|]
+other [|]
 }

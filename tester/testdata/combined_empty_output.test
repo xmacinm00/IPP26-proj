@@ -1,0 +1,11 @@
++++ BASIC
+>>> 1
+*** Combined empty output
+!C! 0
+!I! 0
+
+class Main : Object {
+run [|
+x := 1.
+]
+}

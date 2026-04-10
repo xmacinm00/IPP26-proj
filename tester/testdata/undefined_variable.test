@@ -1,0 +1,10 @@
++++ ERROR
+>>> 1
+!C! 0
+!I! 32
+
+class Main : Object {
+run [|
+x := y.
+]
+}

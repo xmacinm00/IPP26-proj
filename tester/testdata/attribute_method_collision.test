@@ -1,0 +1,13 @@
++++ ERROR
+>>> 1
+!C! 0
+!I! 54
+
+class Main : Object {
+
+foo [|]
+
+run [|
+_ := self foo: 10.
+]
+}

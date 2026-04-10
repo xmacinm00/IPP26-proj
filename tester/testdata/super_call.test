@@ -1,0 +1,23 @@
++++ OO
+>>> 1
+!C! 0
+!I! 0
+
+class A : Object {
+text [|
+r := 'A'.
+]
+}
+
+class B : A {
+text [|
+r := (super text) concatenateWith: 'B'.
+]
+}
+
+class Main : Object {
+run [|
+b := B new.
+_ := (b text) print.
+]
+}
