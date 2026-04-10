@@ -21,9 +21,12 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 
 import {
+  CategoryReport,
   TestCaseDefinition,
+  TestCaseReport,
   TestCaseType,
   TestReport,
+  TestResult,
   UnexecutedReason,
   UnexecutedReasonCode,
 } from "./models.js";
@@ -285,6 +288,18 @@ interface InterpreterExecutionResult {
   spawnError: string | null;
 }
 
+interface DiffExecutionResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  spawnError: string | null;
+}
+
+interface ExecutionOutcome {
+  report: TestCaseReport | null;
+  unexecuted: UnexecutedReason | null;
+}
+
 function trimmedValues(values: string[] | null): string[] {
   if (values === null) {
     return [];
@@ -515,6 +530,7 @@ async function runInterpreter(
     rmSync(tempDir, { recursive: true, force: true });
   }
 }
+
 function loadOptionalStdin(testCase: TestCaseDefinition): string | null {
   if (testCase.stdin_file === null) {
     return null;
@@ -523,127 +539,299 @@ function loadOptionalStdin(testCase: TestCaseDefinition): string | null {
   return readFileSync(testCase.stdin_file, "utf8");
 }
 
-async function probeCompilerPhase(
-    executableTests: TestCaseDefinition[],
+async function executeTestCase(
+    testCase: TestCaseDefinition,
     args: CliArguments
-): Promise<Record<string, UnexecutedReason>> {
-  const unexecuted: Record<string, UnexecutedReason> = {};
+): Promise<ExecutionOutcome> {
+  let parserExitCode: number | null = null;
+  let parserStdout: string | null = null;
+  let parserStderr: string | null = null;
+  let interpreterExitCode: number | null = null;
+  let interpreterStdout: string | null = null;
+  let interpreterStderr: string | null = null;
+  let diffOutput: string | null = null;
 
-  for (const testCase of executableTests) {
-    if (
-        testCase.test_type !== TestCaseType.PARSE_ONLY &&
-        testCase.test_type !== TestCaseType.COMBINED
-    ) {
-      continue;
-    }
-
+  if (testCase.test_type === TestCaseType.PARSE_ONLY) {
     if (args.compiler_path === null) {
-      unexecuted[testCase.name] = new UnexecutedReason(
-          UnexecutedReasonCode.CANNOT_EXECUTE,
-          "Compiler path is not configured."
-      );
-      continue;
+      return {
+        report: null,
+        unexecuted: new UnexecutedReason(
+            UnexecutedReasonCode.CANNOT_EXECUTE,
+            "Compiler path is not configured."
+        ),
+      };
     }
 
     const compilerResult = await runCompiler(args.compiler_path, testCase);
 
     if (compilerResult.spawnError !== null) {
-      unexecuted[testCase.name] = new UnexecutedReason(
-          UnexecutedReasonCode.CANNOT_EXECUTE,
-          `Failed to execute compiler: ${compilerResult.spawnError}`
-      );
-      continue;
+      return {
+        report: null,
+        unexecuted: new UnexecutedReason(
+            UnexecutedReasonCode.CANNOT_EXECUTE,
+            `Failed to execute compiler: ${compilerResult.spawnError}`
+        ),
+      };
     }
 
-    logger.info(
-        "compiler probe for %s -> exit=%s",
-        testCase.name,
-        compilerResult.exitCode
-    );
+    parserExitCode = compilerResult.exitCode;
+    parserStdout = compilerResult.stdout;
+    parserStderr = compilerResult.stderr;
+
+    const result = exitCodeMatches(parserExitCode, testCase.expected_parser_exit_codes)
+        ? TestResult.PASSED
+        : TestResult.UNEXPECTED_PARSER_EXIT_CODE;
+
+    return {
+      report: new TestCaseReport(
+          result,
+          parserExitCode,
+          null,
+          parserStdout,
+          parserStderr,
+          null,
+          null,
+          null
+      ),
+      unexecuted: null,
+    };
   }
 
-  return unexecuted;
+  let xmlInput: string;
+
+  if (testCase.test_type === TestCaseType.EXECUTE_ONLY) {
+    const parsed = parseTestFile(testCase.test_source_path);
+    xmlInput = parsed.source;
+  } else {
+    if (args.compiler_path === null) {
+      return {
+        report: null,
+        unexecuted: new UnexecutedReason(
+            UnexecutedReasonCode.CANNOT_EXECUTE,
+            "Compiler path is not configured."
+        ),
+      };
+    }
+
+    const compilerResult = await runCompiler(args.compiler_path, testCase);
+
+    if (compilerResult.spawnError !== null) {
+      return {
+        report: null,
+        unexecuted: new UnexecutedReason(
+            UnexecutedReasonCode.CANNOT_EXECUTE,
+            `Failed to execute compiler: ${compilerResult.spawnError}`
+        ),
+      };
+    }
+
+    parserExitCode = compilerResult.exitCode;
+    parserStdout = compilerResult.stdout;
+    parserStderr = compilerResult.stderr;
+
+    if (!exitCodeMatches(parserExitCode, testCase.expected_parser_exit_codes)) {
+      return {
+        report: new TestCaseReport(
+            TestResult.UNEXPECTED_PARSER_EXIT_CODE,
+            parserExitCode,
+            null,
+            parserStdout,
+            parserStderr,
+            null,
+            null,
+            null
+        ),
+        unexecuted: null,
+      };
+    }
+
+    if (compilerResult.exitCode !== 0 || compilerResult.xmlOutput === null) {
+      return {
+        report: new TestCaseReport(
+            TestResult.PASSED,
+            parserExitCode,
+            null,
+            parserStdout,
+            parserStderr,
+            null,
+            null,
+            null
+        ),
+        unexecuted: null,
+      };
+    }
+
+    xmlInput = compilerResult.xmlOutput;
+  }
+
+  if (args.interpreter_path === null) {
+    return {
+      report: null,
+      unexecuted: new UnexecutedReason(
+          UnexecutedReasonCode.CANNOT_EXECUTE,
+          "Interpreter path is not configured."
+      ),
+    };
+  }
+
+  const stdinInput = loadOptionalStdin(testCase);
+  const interpreterResult = await runInterpreter(args.interpreter_path, xmlInput, stdinInput);
+
+  if (interpreterResult.spawnError !== null) {
+    return {
+      report: null,
+      unexecuted: new UnexecutedReason(
+          UnexecutedReasonCode.CANNOT_EXECUTE,
+          `Failed to execute interpreter: ${interpreterResult.spawnError}`
+      ),
+    };
+  }
+
+  interpreterExitCode = interpreterResult.exitCode;
+  interpreterStdout = interpreterResult.stdout;
+  interpreterStderr = interpreterResult.stderr;
+
+  if (!exitCodeMatches(interpreterExitCode, testCase.expected_interpreter_exit_codes)) {
+    return {
+      report: new TestCaseReport(
+          TestResult.UNEXPECTED_INTERPRETER_EXIT_CODE,
+          parserExitCode,
+          interpreterExitCode,
+          parserStdout,
+          parserStderr,
+          interpreterStdout,
+          interpreterStderr,
+          null
+      ),
+      unexecuted: null,
+    };
+  }
+
+  if (testCase.expected_stdout_file !== null && interpreterExitCode === 0) {
+    const diffResult = await runDiff(testCase.expected_stdout_file, interpreterStdout);
+
+    if (diffResult.spawnError !== null) {
+      return {
+        report: null,
+        unexecuted: new UnexecutedReason(
+            UnexecutedReasonCode.CANNOT_EXECUTE,
+            `Failed to execute diff: ${diffResult.spawnError}`
+        ),
+      };
+    }
+
+    diffOutput = diffResult.stdout.length > 0 ? diffResult.stdout : diffResult.stderr;
+
+    if (diffResult.exitCode !== 0) {
+      return {
+        report: new TestCaseReport(
+            TestResult.INTERPRETER_RESULT_DIFFERS,
+            parserExitCode,
+            interpreterExitCode,
+            parserStdout,
+            parserStderr,
+            interpreterStdout,
+            interpreterStderr,
+            diffOutput
+        ),
+        unexecuted: null,
+      };
+    }
+  }
+
+  return {
+    report: new TestCaseReport(
+        TestResult.PASSED,
+        parserExitCode,
+        interpreterExitCode,
+        parserStdout,
+        parserStderr,
+        interpreterStdout,
+        interpreterStderr,
+        diffOutput
+    ),
+    unexecuted: null,
+  };
 }
 
-async function probeExecutionPhase(
+function exitCodeMatches(actualExitCode: number | null, expectedExitCodes: number[] | null): boolean {
+  if (actualExitCode === null || expectedExitCodes === null) {
+    return false;
+  }
+
+  return expectedExitCodes.includes(actualExitCode);
+}
+
+async function runDiff(expectedOutputPath: string, actualOutput: string): Promise<DiffExecutionResult> {
+  const tempDir = mkdtempSync(join(tmpdir(), "sol26-diff-"));
+  const actualPath = join(tempDir, "actual.out");
+
+  try {
+    writeFileSync(actualPath, actualOutput, "utf8");
+    const result = await runProcess("diff", [expectedOutputPath, actualPath]);
+
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      spawnError: result.spawnError,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function addExecutedResult(
+    results: Record<string, CategoryReport>,
+    testCase: TestCaseDefinition,
+    testCaseReport: TestCaseReport
+): void {
+  const existingCategory = results[testCase.category];
+  const passedPoints = testCaseReport.result === TestResult.PASSED ? testCase.points : 0;
+
+  if (existingCategory === undefined) {
+    results[testCase.category] = new CategoryReport(
+        testCase.points,
+        passedPoints,
+        { [testCase.name]: testCaseReport }
+    );
+    return;
+  }
+
+  results[testCase.category] = new CategoryReport(
+      existingCategory.total_points + testCase.points,
+      existingCategory.passed_points + passedPoints,
+      {
+        ...existingCategory.test_results,
+        [testCase.name]: testCaseReport,
+      }
+  );
+}
+
+async function executeSelectedTests(
     executableTests: TestCaseDefinition[],
     args: CliArguments
-): Promise<Record<string, UnexecutedReason>> {
+): Promise<{
+  results: Record<string, CategoryReport>;
+  unexecuted: Record<string, UnexecutedReason>;
+}> {
+  const results: Record<string, CategoryReport> = {};
   const unexecuted: Record<string, UnexecutedReason> = {};
 
   for (const testCase of executableTests) {
-    if (testCase.test_type === TestCaseType.PARSE_ONLY) {
+    const outcome = await executeTestCase(testCase, args);
+
+    if (outcome.unexecuted !== null) {
+      unexecuted[testCase.name] = outcome.unexecuted;
       continue;
     }
 
-    if (args.interpreter_path === null) {
-      unexecuted[testCase.name] = new UnexecutedReason(
-          UnexecutedReasonCode.CANNOT_EXECUTE,
-          "Interpreter path is not configured."
-      );
-      continue;
+    if (outcome.report !== null) {
+      addExecutedResult(results, testCase, outcome.report);
     }
-
-    let xmlInput: string | null = null;
-
-    if (testCase.test_type === TestCaseType.EXECUTE_ONLY) {
-      const parsed = parseTestFile(testCase.test_source_path);
-      xmlInput = parsed.source;
-    } else if (testCase.test_type === TestCaseType.COMBINED) {
-      if (args.compiler_path === null) {
-        unexecuted[testCase.name] = new UnexecutedReason(
-            UnexecutedReasonCode.CANNOT_EXECUTE,
-            "Compiler path is not configured."
-        );
-        continue;
-      }
-
-      const compilerResult = await runCompiler(args.compiler_path, testCase);
-
-      if (compilerResult.spawnError !== null) {
-        unexecuted[testCase.name] = new UnexecutedReason(
-            UnexecutedReasonCode.CANNOT_EXECUTE,
-            `Failed to execute compiler: ${compilerResult.spawnError}`
-        );
-        continue;
-      }
-
-      if (compilerResult.exitCode !== 0 || compilerResult.xmlOutput === null) {
-        logger.info(
-            "combined execution probe for %s stopped after compiler exit=%s",
-            testCase.name,
-            compilerResult.exitCode
-        );
-        continue;
-      }
-
-      xmlInput = compilerResult.xmlOutput;
-    }
-
-    if (xmlInput === null) {
-      continue;
-    }
-
-    const stdinInput = loadOptionalStdin(testCase);
-    const interpreterResult = await runInterpreter(args.interpreter_path, xmlInput, stdinInput);
-
-    if (interpreterResult.spawnError !== null) {
-      unexecuted[testCase.name] = new UnexecutedReason(
-          UnexecutedReasonCode.CANNOT_EXECUTE,
-          `Failed to execute interpreter: ${interpreterResult.spawnError}`
-      );
-      continue;
-    }
-
-    logger.info(
-        "interpreter probe for %s -> exit=%s stderr=%s",
-        testCase.name,
-        interpreterResult.exitCode,
-        interpreterResult.stderr.trim()
-    );
   }
 
-  return unexecuted;
+  return { results, unexecuted };
 }
 
 function applyDryRun(
@@ -909,18 +1097,13 @@ async function main(): Promise<void> {
       args
   );
 
-  const compilerProbeUnexecuted = args.dry_run
-      ? {}
-      : await probeCompilerPhase(executionPreparation.selectedForExecution, args);
-
-  const executionProbeUnexecuted = args.dry_run
-      ? {}
-      : await probeExecutionPhase(executionPreparation.selectedForExecution, args);
+  const executed = args.dry_run
+      ? { results: {}, unexecuted: {} }
+      : await executeSelectedTests(executionPreparation.selectedForExecution, args);
 
   const mergedUnexecuted: Record<string, UnexecutedReason> = {
     ...executionPreparation.unexecuted,
-    ...compilerProbeUnexecuted,
-    ...executionProbeUnexecuted,
+    ...executed.unexecuted,
   };
 
   const unexecuted = args.dry_run
@@ -930,7 +1113,7 @@ async function main(): Promise<void> {
   const report = new TestReport({
     discovered_test_cases: loadResult.discoveredTestCases,
     unexecuted,
-    results: null,
+    results: args.dry_run ? null : executed.results,
   });
 
   writeResult(report, args.output);
