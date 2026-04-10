@@ -52,6 +52,8 @@ interface CliArguments {
   exclude_test: string[] | null;
   verbose: number;
   regex_filters: boolean;
+  compiler_path: string | null;
+  interpreter_path: string | null;
 }
 
 function writeResult(resultReport: TestReport, outputFile: string | null): void {
@@ -113,6 +115,8 @@ const PARSE_OPTIONS = {
   "exclude-test": { type: "string", multiple: true },
   "regex-filters": { type: "boolean", short: "g", default: false },
   verbose: { type: "boolean", short: "v", multiple: true },
+  compiler: { type: "string" },
+  interpreter: { type: "string" },
 } as const;
 
 function normalizeArgv(argv: string[]): string[] {
@@ -179,6 +183,8 @@ function parseArguments(): CliArguments {
     exclude_test: listOrNull(parsedValues["exclude-test"]),
     verbose: parsedValues["verbose"]?.length ?? 0,
     regex_filters: parsedValues["regex-filters"],
+    compiler_path: parsedValues["compiler"] ?? process.env["SOL2XML_PATH"] ?? null,
+    interpreter_path: parsedValues["interpreter"] ?? process.env["SOL26_INTERPRETER_PATH"] ?? null,
   };
 
   // Check source directory
@@ -258,6 +264,19 @@ interface ProcessRunResult {
   spawnError: string | null;
 }
 
+interface CompilerExecutionResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  spawnError: string | null;
+  xmlOutput: string | null;
+}
+
+interface ExecutionPreparationResult {
+  selectedForExecution: TestCaseDefinition[];
+  unexecuted: Record<string, UnexecutedReason>;
+}
+
 function trimmedValues(values: string[] | null): string[] {
   if (values === null) {
     return [];
@@ -327,6 +346,10 @@ function matchesExclude(testCase: TestCaseDefinition, filters: FilterSets): bool
   );
 }
 
+function isSelectedByFilters(testCase: TestCaseDefinition, filters: FilterSets): boolean {
+  return matchesInclude(testCase, filters) && !matchesExclude(testCase, filters);
+}
+
 function applyFilters(
     discoveredTestCases: TestCaseDefinition[],
     existingUnexecuted: Record<string, UnexecutedReason>,
@@ -345,6 +368,30 @@ function applyFilters(
   }
 
   return unexecuted;
+}
+
+function prepareExecutionSet(
+    discoveredTestCases: TestCaseDefinition[],
+    existingUnexecuted: Record<string, UnexecutedReason>,
+    args: CliArguments
+): ExecutionPreparationResult {
+  const filters = buildFilterSets(args);
+  const selectedForExecution: TestCaseDefinition[] = [];
+  const unexecuted: Record<string, UnexecutedReason> = { ...existingUnexecuted };
+
+  for (const testCase of discoveredTestCases) {
+    if (unexecuted[testCase.name] !== undefined) {
+      continue;
+    }
+
+    if (!isSelectedByFilters(testCase, filters)) {
+      continue;
+    }
+
+    selectedForExecution.push(testCase);
+  }
+
+  return { selectedForExecution, unexecuted };
 }
 
 function runProcess(command: string, args: string[], stdin: string | null = null): Promise<ProcessRunResult> {
@@ -409,6 +456,66 @@ function runProcess(command: string, args: string[], stdin: string | null = null
       });
     }
   });
+}
+
+async function runCompiler(
+    compilerPath: string,
+    testCase: TestCaseDefinition
+): Promise<CompilerExecutionResult> {
+  const parsed = parseTestFile(testCase.test_source_path);
+  const compilerInput = parsed.source;
+
+  const result = await runProcess("python3", [compilerPath], compilerInput);
+
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    spawnError: result.spawnError,
+    xmlOutput: result.exitCode === 0 ? result.stdout : null,
+  };
+}
+
+async function probeCompilerPhase(
+    executableTests: TestCaseDefinition[],
+    args: CliArguments
+): Promise<Record<string, UnexecutedReason>> {
+  const unexecuted: Record<string, UnexecutedReason> = {};
+
+  for (const testCase of executableTests) {
+    if (
+        testCase.test_type !== TestCaseType.PARSE_ONLY &&
+        testCase.test_type !== TestCaseType.COMBINED
+    ) {
+      continue;
+    }
+
+    if (args.compiler_path === null) {
+      unexecuted[testCase.name] = new UnexecutedReason(
+          UnexecutedReasonCode.CANNOT_EXECUTE,
+          "Compiler path is not configured."
+      );
+      continue;
+    }
+
+    const compilerResult = await runCompiler(args.compiler_path, testCase);
+
+    if (compilerResult.spawnError !== null) {
+      unexecuted[testCase.name] = new UnexecutedReason(
+          UnexecutedReasonCode.CANNOT_EXECUTE,
+          `Failed to execute compiler: ${compilerResult.spawnError}`
+      );
+      continue;
+    }
+
+    logger.info(
+        "compiler probe for %s -> exit=%s",
+        testCase.name,
+        compilerResult.exitCode
+    );
+  }
+
+  return unexecuted;
 }
 
 function applyDryRun(
@@ -645,9 +752,24 @@ async function main(): Promise<void> {
       args
   );
 
+  const executionPreparation = prepareExecutionSet(
+      loadResult.discoveredTestCases,
+      unexecutedAfterFiltering,
+      args
+  );
+
+  const compilerProbeUnexecuted = args.dry_run
+      ? {}
+      : await probeCompilerPhase(executionPreparation.selectedForExecution, args);
+
+  const mergedUnexecuted: Record<string, UnexecutedReason> = {
+    ...executionPreparation.unexecuted,
+    ...compilerProbeUnexecuted,
+  };
+
   const unexecuted = args.dry_run
-      ? applyDryRun(loadResult.discoveredTestCases, unexecutedAfterFiltering)
-      : unexecutedAfterFiltering;
+      ? applyDryRun(loadResult.discoveredTestCases, mergedUnexecuted)
+      : mergedUnexecuted;
 
   const report = new TestReport({
     discovered_test_cases: loadResult.discoveredTestCases,

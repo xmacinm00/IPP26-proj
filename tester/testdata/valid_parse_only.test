@@ -1,6 +1,6 @@
 +++ BASIC
 >>> 1
-!C! 10
+!C! 0
 
 class Main : Object {
 run [ | ]
