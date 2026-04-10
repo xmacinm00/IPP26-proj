@@ -720,9 +720,9 @@ async function executeTestCase(
       };
     }
 
-    diffOutput = diffResult.stdout.length > 0 ? diffResult.stdout : diffResult.stderr;
-
     if (diffResult.exitCode !== 0) {
+      diffOutput = diffResult.stdout.length > 0 ? diffResult.stdout : diffResult.stderr;
+
       return {
         report: new TestCaseReport(
             TestResult.INTERPRETER_RESULT_DIFFERS,
