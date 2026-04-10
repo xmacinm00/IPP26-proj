@@ -14,10 +14,11 @@
  *                  module based on its Python counterpart.
  */
 
-import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 
 import {
   TestCaseDefinition,
@@ -277,6 +278,13 @@ interface ExecutionPreparationResult {
   unexecuted: Record<string, UnexecutedReason>;
 }
 
+interface InterpreterExecutionResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  spawnError: string | null;
+}
+
 function trimmedValues(values: string[] | null): string[] {
   if (values === null) {
     return [];
@@ -465,7 +473,7 @@ async function runCompiler(
   const parsed = parseTestFile(testCase.test_source_path);
   const compilerInput = parsed.source;
 
-  const result = await runProcess("python3", [compilerPath], compilerInput);
+  const result = await runProcess("python", [compilerPath], compilerInput);
 
   return {
     exitCode: result.exitCode,
@@ -474,6 +482,45 @@ async function runCompiler(
     spawnError: result.spawnError,
     xmlOutput: result.exitCode === 0 ? result.stdout : null,
   };
+}
+
+async function runInterpreter(
+    interpreterPath: string,
+    xmlInput: string,
+    stdinInput: string | null
+): Promise<InterpreterExecutionResult> {
+  const tempDir = mkdtempSync(join(tmpdir(), "sol26-tester-"));
+  const xmlPath = join(tempDir, "program.xml");
+  const inputPath = join(tempDir, "input.txt");
+
+  try {
+    writeFileSync(xmlPath, xmlInput, "utf8");
+
+    const args = ["run", "python", interpreterPath, "--source", xmlPath];
+
+    if (stdinInput !== null) {
+      writeFileSync(inputPath, stdinInput, "utf8");
+      args.push("--input", inputPath);
+    }
+
+    const result = await runProcess("uv", args);
+
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      spawnError: result.spawnError,
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+function loadOptionalStdin(testCase: TestCaseDefinition): string | null {
+  if (testCase.stdin_file === null) {
+    return null;
+  }
+
+  return readFileSync(testCase.stdin_file, "utf8");
 }
 
 async function probeCompilerPhase(
@@ -512,6 +559,87 @@ async function probeCompilerPhase(
         "compiler probe for %s -> exit=%s",
         testCase.name,
         compilerResult.exitCode
+    );
+  }
+
+  return unexecuted;
+}
+
+async function probeExecutionPhase(
+    executableTests: TestCaseDefinition[],
+    args: CliArguments
+): Promise<Record<string, UnexecutedReason>> {
+  const unexecuted: Record<string, UnexecutedReason> = {};
+
+  for (const testCase of executableTests) {
+    if (testCase.test_type === TestCaseType.PARSE_ONLY) {
+      continue;
+    }
+
+    if (args.interpreter_path === null) {
+      unexecuted[testCase.name] = new UnexecutedReason(
+          UnexecutedReasonCode.CANNOT_EXECUTE,
+          "Interpreter path is not configured."
+      );
+      continue;
+    }
+
+    let xmlInput: string | null = null;
+
+    if (testCase.test_type === TestCaseType.EXECUTE_ONLY) {
+      const parsed = parseTestFile(testCase.test_source_path);
+      xmlInput = parsed.source;
+    } else if (testCase.test_type === TestCaseType.COMBINED) {
+      if (args.compiler_path === null) {
+        unexecuted[testCase.name] = new UnexecutedReason(
+            UnexecutedReasonCode.CANNOT_EXECUTE,
+            "Compiler path is not configured."
+        );
+        continue;
+      }
+
+      const compilerResult = await runCompiler(args.compiler_path, testCase);
+
+      if (compilerResult.spawnError !== null) {
+        unexecuted[testCase.name] = new UnexecutedReason(
+            UnexecutedReasonCode.CANNOT_EXECUTE,
+            `Failed to execute compiler: ${compilerResult.spawnError}`
+        );
+        continue;
+      }
+
+      if (compilerResult.exitCode !== 0 || compilerResult.xmlOutput === null) {
+        logger.info(
+            "combined execution probe for %s stopped after compiler exit=%s",
+            testCase.name,
+            compilerResult.exitCode
+        );
+        continue;
+      }
+
+      xmlInput = compilerResult.xmlOutput;
+    }
+
+    if (xmlInput === null) {
+      continue;
+    }
+
+    const stdinInput = loadOptionalStdin(testCase);
+    const interpreterResult = await runInterpreter(args.interpreter_path, xmlInput, stdinInput);
+
+    if (interpreterResult.spawnError !== null) {
+      unexecuted[testCase.name] = new UnexecutedReason(
+          UnexecutedReasonCode.CANNOT_EXECUTE,
+          `Failed to execute interpreter: ${interpreterResult.spawnError}`
+      );
+      continue;
+    }
+
+    logger.info(
+        "interpreter probe for %s -> exit=%s stderr=%s",
+        testCase.name,
+        interpreterResult.exitCode,
+        interpreterResult.stderr.trim()
     );
   }
 
@@ -637,6 +765,29 @@ function parseTestFile(testFilePath: string): ParsedTestFile {
   };
 }
 
+function optionalSidecarPath(testFilePath: string, extension: ".in" | ".out"): string | null {
+  const sidecarPath = testFilePath.replace(/\.test$/u, extension);
+  return existsSync(sidecarPath) ? sidecarPath : null;
+}
+
+function withSidecars(testCase: TestCaseDefinition): TestCaseDefinition {
+  const stdinFile = optionalSidecarPath(testCase.test_source_path, ".in");
+  const expectedStdoutFile = optionalSidecarPath(testCase.test_source_path, ".out");
+
+  return new TestCaseDefinition({
+    name: testCase.name,
+    test_type: testCase.test_type,
+    description: testCase.description,
+    category: testCase.category,
+    points: testCase.points,
+    test_source_path: testCase.test_source_path,
+    stdin_file: stdinFile,
+    expected_stdout_file: expectedStdoutFile,
+    expected_parser_exit_codes: testCase.expected_parser_exit_codes,
+    expected_interpreter_exit_codes: testCase.expected_interpreter_exit_codes,
+  });
+}
+
 function determineTestType(parsed: ParsedTestFile, testFilePath: string): TestCaseType {
   const hasParser = parsed.parserExitCodes.length > 0;
   const hasInterpreter = parsed.interpreterExitCodes.length > 0;
@@ -707,7 +858,7 @@ function loadDiscoveredTests(testsDir: string, recursive: boolean): LoadTestsRes
             parsed.interpreterExitCodes.length > 0 ? parsed.interpreterExitCodes : null,
       });
 
-      discoveredTestCases.push(testCase);
+      discoveredTestCases.push(withSidecars(testCase));
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
 
@@ -762,9 +913,14 @@ async function main(): Promise<void> {
       ? {}
       : await probeCompilerPhase(executionPreparation.selectedForExecution, args);
 
+  const executionProbeUnexecuted = args.dry_run
+      ? {}
+      : await probeExecutionPhase(executionPreparation.selectedForExecution, args);
+
   const mergedUnexecuted: Record<string, UnexecutedReason> = {
     ...executionPreparation.unexecuted,
     ...compilerProbeUnexecuted,
+    ...executionProbeUnexecuted,
   };
 
   const unexecuted = args.dry_run
