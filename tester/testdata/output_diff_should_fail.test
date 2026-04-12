@@ -1,0 +1,10 @@
++++ OUTPUT
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+run [|
+_ := 'hello' print.
+]
+}

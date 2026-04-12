@@ -1,0 +1,13 @@
++++ BLOCK
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+run [|
+x := 3.
+cond := [| r := x greaterThan: 0. ].
+body := [| _ := (x asString) print. x := x minus: 1. ].
+_ := cond whileTrue: body.
+]
+}

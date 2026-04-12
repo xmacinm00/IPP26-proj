@@ -1,0 +1,13 @@
++++ BUILTIN
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+run [|
+a := Object new.
+b := a.
+x := a identicalTo: b.
+_ := (x asString) print.
+]
+}

@@ -262,9 +262,9 @@ class Interpreter:
         if self._is_super_send(send):
             return self._evaluate_super_send(receiver, send, env, context)
 
-        builtin_result = self._try_builtin_subclass_send(receiver, send, env, context)
-        if builtin_result is not None:
-            return builtin_result
+        # builtin_result = self._try_builtin_subclass_send(receiver, send, env, context)
+        # if builtin_result is not None:
+        #     return builtin_result
 
         return self._evaluate_object_message_send(receiver, send, env, context)
 
@@ -283,14 +283,19 @@ class Interpreter:
 
         builtin_ancestor = self._get_builtin_ancestor(receiver.class_def.name)
 
-        if builtin_ancestor == "Integer" and receiver.integer_value is not None:
-            return self._evaluate_integer_like_object_send(receiver, send, env, context)
+        try:
+            if builtin_ancestor == "Integer" and receiver.integer_value is not None:
+                return self._evaluate_integer_like_object_send(receiver, send, env, context)
 
-        if builtin_ancestor == "String" and receiver.string_value is not None:
-            return self._evaluate_string_like_object_send(receiver, send, env, context)
+            if builtin_ancestor == "String" and receiver.string_value is not None:
+                return self._evaluate_string_like_object_send(receiver, send, env, context)
 
-        if builtin_ancestor == "Block" and receiver.block_value is not None:
-            return self._evaluate_block_like_object_send(receiver, send, env, context)
+            if builtin_ancestor == "Block" and receiver.block_value is not None:
+                return self._evaluate_block_like_object_send(receiver, send, env, context)
+        except InterpreterError as err:
+            if err.error_code == ErrorCode.INT_DNU:
+                return None
+            raise
 
         return None
 
@@ -402,6 +407,15 @@ class Interpreter:
             context: ExecutionContext | None,
             original_error: InterpreterError,
     ) -> RuntimeValue:
+        builtin_subclass_result = self._try_builtin_subclass_send(
+            receiver,
+            send,
+            env,
+            context,
+        )
+        if builtin_subclass_result is not None:
+            return builtin_subclass_result
+
         try:
             return self._evaluate_builtin_send(receiver, send, env, context)
         except InterpreterError as builtin_err:
@@ -1254,6 +1268,12 @@ class Interpreter:
             f"Undefined class or unsupported built-in class: {receiver.name}",
         )
 
+    def _copy_runtime_object_attributes(
+            self,
+            source: RuntimeObject,
+            target: RuntimeObject) -> None:
+        target.attributes = dict(source.attributes)
+
     def _evaluate_class_from(
             self,
             receiver: RuntimeClassRef,
@@ -1268,27 +1288,34 @@ class Interpreter:
         value = argument_values[0]
 
         if receiver.name in self.class_table:
-            class_def = self.class_table[receiver.name]
-            builtin_ancestor = self._get_builtin_ancestor(receiver.name)
+            return self._evaluate_user_class_from(receiver, value)
 
-            if builtin_ancestor == "Integer":
-                int_value = self._extract_integer_value(value)
-                if int_value is None:
-                    raise InterpreterError(
-                        ErrorCode.INT_INVALID_ARG,
-                        f"{receiver.name} from: expects an Integer-compatible argument.",
-                    )
-                return RuntimeObject(class_def=class_def, integer_value=int_value)
+        return self._evaluate_builtin_class_from(receiver, value)
 
-            if builtin_ancestor == "String":
-                str_value = self._extract_string_value(value)
-                if str_value is None:
-                    raise InterpreterError(
-                        ErrorCode.INT_INVALID_ARG,
-                        f"{receiver.name} from: expects a String-compatible argument.",
-                    )
-                return RuntimeObject(class_def=class_def, string_value=str_value)
+    def _evaluate_user_class_from(
+            self,
+            receiver: RuntimeClassRef,
+            value: RuntimeValue,
+    ) -> RuntimeValue:
+        class_def = self.class_table[receiver.name]
+        builtin_ancestor = self._get_builtin_ancestor(receiver.name)
 
+        if builtin_ancestor == "Integer":
+            return self._build_integer_like_from(class_def, receiver.name, value)
+
+        if builtin_ancestor == "String":
+            return self._build_string_like_from(class_def, receiver.name, value)
+
+        new_obj = RuntimeObject(class_def=class_def)
+        if isinstance(value, RuntimeObject):
+            self._copy_runtime_object_attributes(value, new_obj)
+        return new_obj
+
+    def _evaluate_builtin_class_from(
+            self,
+            receiver: RuntimeClassRef,
+            value: RuntimeValue,
+    ) -> RuntimeValue:
         if receiver.name == "Nil":
             return RuntimeNil()
 
@@ -1297,6 +1324,13 @@ class Interpreter:
 
         if receiver.name == "False":
             return RuntimeFalse()
+
+        if receiver.name == "Object":
+            dummy_class = ClassDef(name="Object", parent="", methods=[])
+            new_obj = RuntimeObject(class_def=dummy_class)
+            if isinstance(value, RuntimeObject):
+                self._copy_runtime_object_attributes(value, new_obj)
+            return new_obj
 
         if receiver.name == "Integer":
             if not isinstance(value, RuntimeInteger):
@@ -1318,6 +1352,42 @@ class Interpreter:
             ErrorCode.SEM_UNDEF,
             f"Unsupported class-side message from: for class {receiver.name}.",
         )
+
+    def _build_integer_like_from(
+            self,
+            class_def: ClassDef,
+            class_name: str,
+            value: RuntimeValue,
+    ) -> RuntimeValue:
+        int_value = self._extract_integer_value(value)
+        if int_value is None:
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                f"{class_name} from: expects an Integer-compatible argument.",
+            )
+
+        new_obj = RuntimeObject(class_def=class_def, integer_value=int_value)
+        if isinstance(value, RuntimeObject):
+            self._copy_runtime_object_attributes(value, new_obj)
+        return new_obj
+
+    def _build_string_like_from(
+            self,
+            class_def: ClassDef,
+            class_name: str,
+            value: RuntimeValue,
+    ) -> RuntimeValue:
+        str_value = self._extract_string_value(value)
+        if str_value is None:
+            raise InterpreterError(
+                ErrorCode.INT_INVALID_ARG,
+                f"{class_name} from: expects a String-compatible argument.",
+            )
+
+        new_obj = RuntimeObject(class_def=class_def, string_value=str_value)
+        if isinstance(value, RuntimeObject):
+            self._copy_runtime_object_attributes(value, new_obj)
+        return new_obj
 
     def _evaluate_class_read(
             self,

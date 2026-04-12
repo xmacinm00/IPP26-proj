@@ -1,0 +1,11 @@
++++ BUILTIN
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+run [|
+x := 'abc' asInteger.
+_ := (x asString) print.
+]
+}

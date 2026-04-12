@@ -1,0 +1,16 @@
++++ ERROR
+>>> 1
+!C! 0
+!I! 35
+
+class A : Object {
+x [|]
+}
+
+class A : Object {
+y [|]
+}
+
+class Main : Object {
+run [|]
+}

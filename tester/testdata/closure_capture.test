@@ -1,0 +1,17 @@
++++ BLOCK
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+
+makeAdder: [ :x |
+b := [ :y | z := x plus: y. ].
+]
+
+run [|
+add2 := self makeAdder: 2.
+r := add2 value: 3.
+_ := (r asString) print.
+]
+}

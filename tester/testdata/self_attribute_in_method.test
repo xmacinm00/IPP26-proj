@@ -1,0 +1,17 @@
++++ OO
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+
+store: [ :x |
+_ := self value: x.
+r := self value.
+]
+
+run [|
+r := self store: 9.
+_ := (r asString) print.
+]
+}

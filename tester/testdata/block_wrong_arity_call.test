@@ -1,0 +1,11 @@
++++ ERROR
+>>> 1
+!C! 0
+!I! 51
+
+class Main : Object {
+run [|
+b := [ :x | y := x. ].
+_ := b value.
+]
+}

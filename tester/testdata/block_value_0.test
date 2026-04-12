@@ -1,0 +1,12 @@
++++ BLOCK
+>>> 1
+!C! 0
+!I! 0
+
+class Main : Object {
+run [|
+b := [| x := 1. ].
+r := b value.
+_ := (r asString) print.
+]
+}
