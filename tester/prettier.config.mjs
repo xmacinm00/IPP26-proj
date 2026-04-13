@@ -5,5 +5,5 @@ export default {
   useTabs: false,
   singleQuote: false,
   trailingComma: "es5",
-  semi: true
+  semi: true,
 };
