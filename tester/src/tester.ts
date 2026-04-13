@@ -14,7 +14,15 @@
  *                  module based on its Python counterpart.
  */
 
-import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  mkdtempSync,
+  rmSync,
+} from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
@@ -152,16 +160,31 @@ function parseArguments(): CliArguments {
   /**
    * Parses the command-line arguments and performs basic validation a sanitization.
    */
-  let parsed: ReturnType<typeof parseCliArgumentsRaw>;
+  const parsed = parseCliOrExit();
+  const testsDir = handleHelpOrMissingPositional(parsed);
+  const args = buildCliArguments(parsed, testsDir);
 
+  if (!existsSync(args.tests_dir) || !lstatSync(args.tests_dir).isDirectory()) {
+    console.error("The provided path is not a directory.");
+    process.exit(1);
+  }
+
+  validateOutputPathOrExit(args.output);
+
+  return args;
+}
+
+function parseCliOrExit(): ReturnType<typeof parseCliArgumentsRaw> {
   try {
-    parsed = parseCliArgumentsRaw(process.argv.slice(2));
+    return parseCliArgumentsRaw(process.argv.slice(2));
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(message);
     process.exit(2);
   }
+}
 
+function handleHelpOrMissingPositional(parsed: ReturnType<typeof parseCliArgumentsRaw>): string {
   const parsedValues = parsed.values;
 
   if (parsedValues["help"]) {
@@ -174,8 +197,17 @@ function parseArguments(): CliArguments {
     process.exit(2);
   }
 
-  const args: CliArguments = {
-    tests_dir: resolve(parsed.positionals[0]),
+  return parsed.positionals[0];
+}
+
+function buildCliArguments(
+  parsed: ReturnType<typeof parseCliArgumentsRaw>,
+  testsDir: string
+): CliArguments {
+  const parsedValues = parsed.values;
+
+  return {
+    tests_dir: resolve(testsDir),
     recursive: parsedValues["recursive"],
     output: parsedValues["output"] ?? null,
     dry_run: parsedValues["dry-run"],
@@ -190,27 +222,22 @@ function parseArguments(): CliArguments {
     compiler_path: parsedValues["compiler"] ?? process.env["SOL2XML_PATH"] ?? null,
     interpreter_path: parsedValues["interpreter"] ?? process.env["SOL26_INTERPRETER_PATH"] ?? null,
   };
+}
 
-  // Check source directory
-  if (!existsSync(args.tests_dir) || !lstatSync(args.tests_dir).isDirectory()) {
-    console.error("The provided path is not a directory.");
+function validateOutputPathOrExit(outputPath: string | null): void {
+  if (outputPath === null) {
+    return;
+  }
+
+  const outputParent = dirname(outputPath);
+  if (!existsSync(outputParent)) {
+    console.error("The parent directory of the output file does not exist.");
     process.exit(1);
   }
 
-  // Warn if the output file already exists
-  if (args.output !== null) {
-    const outputParent = dirname(args.output);
-    if (!existsSync(outputParent)) {
-      console.error("The parent directory of the output file does not exist.");
-      process.exit(1);
-    }
-
-    if (existsSync(args.output)) {
-      logger.warn("The output file will be overwritten: %s", args.output);
-    }
+  if (existsSync(outputPath)) {
+    logger.warn("The output file will be overwritten: %s", outputPath);
   }
-
-  return args;
 }
 
 function discoverTestFiles(testsDir: string, recursive: boolean): string[] {
@@ -349,23 +376,20 @@ function buildFilterSets(args: CliArguments): FilterSets {
 }
 
 function matchesInclude(testCase: TestCaseDefinition, filters: FilterSets): boolean {
-  const hasIncludeFilters =
-      filters.includeNames.size > 0 || filters.includeCategories.size > 0;
+  const hasIncludeFilters = filters.includeNames.size > 0 || filters.includeCategories.size > 0;
 
   if (!hasIncludeFilters) {
     return true;
   }
 
   return (
-      filters.includeNames.has(testCase.name) ||
-      filters.includeCategories.has(testCase.category)
+    filters.includeNames.has(testCase.name) || filters.includeCategories.has(testCase.category)
   );
 }
 
 function matchesExclude(testCase: TestCaseDefinition, filters: FilterSets): boolean {
   return (
-      filters.excludeNames.has(testCase.name) ||
-      filters.excludeCategories.has(testCase.category)
+    filters.excludeNames.has(testCase.name) || filters.excludeCategories.has(testCase.category)
   );
 }
 
@@ -374,9 +398,9 @@ function isSelectedByFilters(testCase: TestCaseDefinition, filters: FilterSets):
 }
 
 function applyFilters(
-    discoveredTestCases: TestCaseDefinition[],
-    existingUnexecuted: Record<string, UnexecutedReason>,
-    args: CliArguments
+  discoveredTestCases: TestCaseDefinition[],
+  existingUnexecuted: Record<string, UnexecutedReason>,
+  args: CliArguments
 ): Record<string, UnexecutedReason> {
   const filters = buildFilterSets(args);
   const unexecuted: Record<string, UnexecutedReason> = { ...existingUnexecuted };
@@ -384,8 +408,8 @@ function applyFilters(
   for (const testCase of discoveredTestCases) {
     if (!matchesInclude(testCase, filters) || matchesExclude(testCase, filters)) {
       unexecuted[testCase.name] = new UnexecutedReason(
-          UnexecutedReasonCode.FILTERED_OUT,
-          "Test case was filtered out by include/exclude rules."
+        UnexecutedReasonCode.FILTERED_OUT,
+        "Test case was filtered out by include/exclude rules."
       );
     }
   }
@@ -394,9 +418,9 @@ function applyFilters(
 }
 
 function prepareExecutionSet(
-    discoveredTestCases: TestCaseDefinition[],
-    existingUnexecuted: Record<string, UnexecutedReason>,
-    args: CliArguments
+  discoveredTestCases: TestCaseDefinition[],
+  existingUnexecuted: Record<string, UnexecutedReason>,
+  args: CliArguments
 ): ExecutionPreparationResult {
   const filters = buildFilterSets(args);
   const selectedForExecution: TestCaseDefinition[] = [];
@@ -417,7 +441,11 @@ function prepareExecutionSet(
   return { selectedForExecution, unexecuted };
 }
 
-function runProcess(command: string, args: string[], stdin: string | null = null): Promise<ProcessRunResult> {
+function runProcess(
+  command: string,
+  args: string[],
+  stdin: string | null = null
+): Promise<ProcessRunResult> {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
@@ -482,8 +510,8 @@ function runProcess(command: string, args: string[], stdin: string | null = null
 }
 
 async function runCompiler(
-    compilerPath: string,
-    testCase: TestCaseDefinition
+  compilerPath: string,
+  testCase: TestCaseDefinition
 ): Promise<CompilerExecutionResult> {
   const parsed = parseTestFile(testCase.test_source_path);
   const compilerInput = parsed.source;
@@ -500,9 +528,9 @@ async function runCompiler(
 }
 
 async function runInterpreter(
-    interpreterPath: string,
-    xmlInput: string,
-    stdinInput: string | null
+  interpreterPath: string,
+  xmlInput: string,
+  stdinInput: string | null
 ): Promise<InterpreterExecutionResult> {
   const tempDir = mkdtempSync(join(tmpdir(), "sol26-tester-"));
   const xmlPath = join(tempDir, "program.xml");
@@ -539,222 +567,254 @@ function loadOptionalStdin(testCase: TestCaseDefinition): string | null {
   return readFileSync(testCase.stdin_file, "utf8");
 }
 
-async function executeTestCase(
-    testCase: TestCaseDefinition,
-    args: CliArguments
+function cannotExecute(message: string): ExecutionOutcome {
+  return {
+    report: null,
+    unexecuted: new UnexecutedReason(UnexecutedReasonCode.CANNOT_EXECUTE, message),
+  };
+}
+
+function executedReport(
+  result: TestResult,
+  parserExitCode: number | null,
+  interpreterExitCode: number | null,
+  parserStdout: string | null,
+  parserStderr: string | null,
+  interpreterStdout: string | null,
+  interpreterStderr: string | null,
+  diffOutput: string | null
+): ExecutionOutcome {
+  return {
+    report: new TestCaseReport(
+      result,
+      parserExitCode,
+      interpreterExitCode,
+      parserStdout,
+      parserStderr,
+      interpreterStdout,
+      interpreterStderr,
+      diffOutput
+    ),
+    unexecuted: null,
+  };
+}
+
+async function executeParseOnlyTest(
+  testCase: TestCaseDefinition,
+  compilerPath: string
 ): Promise<ExecutionOutcome> {
-  let parserExitCode: number | null = null;
-  let parserStdout: string | null = null;
-  let parserStderr: string | null = null;
-  let interpreterExitCode: number | null = null;
-  let interpreterStdout: string | null = null;
-  let interpreterStderr: string | null = null;
-  let diffOutput: string | null = null;
+  const compilerResult = await runCompiler(compilerPath, testCase);
 
-  if (testCase.test_type === TestCaseType.PARSE_ONLY) {
-    if (args.compiler_path === null) {
-      return {
-        report: null,
-        unexecuted: new UnexecutedReason(
-            UnexecutedReasonCode.CANNOT_EXECUTE,
-            "Compiler path is not configured."
-        ),
-      };
-    }
+  if (compilerResult.spawnError !== null) {
+    return cannotExecute(`Failed to execute compiler: ${compilerResult.spawnError}`);
+  }
 
-    const compilerResult = await runCompiler(args.compiler_path, testCase);
+  const parserExitCode = compilerResult.exitCode;
+  const parserStdout = compilerResult.stdout;
+  const parserStderr = compilerResult.stderr;
 
-    if (compilerResult.spawnError !== null) {
-      return {
-        report: null,
-        unexecuted: new UnexecutedReason(
-            UnexecutedReasonCode.CANNOT_EXECUTE,
-            `Failed to execute compiler: ${compilerResult.spawnError}`
-        ),
-      };
-    }
+  const result = exitCodeMatches(parserExitCode, testCase.expected_parser_exit_codes)
+    ? TestResult.PASSED
+    : TestResult.UNEXPECTED_PARSER_EXIT_CODE;
 
-    parserExitCode = compilerResult.exitCode;
-    parserStdout = compilerResult.stdout;
-    parserStderr = compilerResult.stderr;
+  return executedReport(
+    result,
+    parserExitCode,
+    null,
+    parserStdout,
+    parserStderr,
+    null,
+    null,
+    null
+  );
+}
 
-    const result = exitCodeMatches(parserExitCode, testCase.expected_parser_exit_codes)
-        ? TestResult.PASSED
-        : TestResult.UNEXPECTED_PARSER_EXIT_CODE;
-
+async function prepareXmlInputForExecutableTest(
+  testCase: TestCaseDefinition,
+  compilerPath: string | null
+): Promise<{
+  outcome: ExecutionOutcome | null;
+  xmlInput: string | null;
+  parserExitCode: number | null;
+  parserStdout: string | null;
+  parserStderr: string | null;
+}> {
+  if (testCase.test_type === TestCaseType.EXECUTE_ONLY) {
+    const parsed = parseTestFile(testCase.test_source_path);
     return {
-      report: new TestCaseReport(
-          result,
-          parserExitCode,
-          null,
-          parserStdout,
-          parserStderr,
-          null,
-          null,
-          null
-      ),
-      unexecuted: null,
+      outcome: null,
+      xmlInput: parsed.source,
+      parserExitCode: null,
+      parserStdout: null,
+      parserStderr: null,
     };
   }
 
-  let xmlInput: string;
+  if (compilerPath === null) {
+    return {
+      outcome: cannotExecute("Compiler path is not configured."),
+      xmlInput: null,
+      parserExitCode: null,
+      parserStdout: null,
+      parserStderr: null,
+    };
+  }
 
-  if (testCase.test_type === TestCaseType.EXECUTE_ONLY) {
-    const parsed = parseTestFile(testCase.test_source_path);
-    xmlInput = parsed.source;
-  } else {
+  const compilerResult = await runCompiler(compilerPath, testCase);
+
+  if (compilerResult.spawnError !== null) {
+    return {
+      outcome: cannotExecute(`Failed to execute compiler: ${compilerResult.spawnError}`),
+      xmlInput: null,
+      parserExitCode: null,
+      parserStdout: null,
+      parserStderr: null,
+    };
+  }
+
+  const parserExitCode = compilerResult.exitCode;
+  const parserStdout = compilerResult.stdout;
+  const parserStderr = compilerResult.stderr;
+
+  if (!exitCodeMatches(parserExitCode, testCase.expected_parser_exit_codes)) {
+    return {
+      outcome: executedReport(
+        TestResult.UNEXPECTED_PARSER_EXIT_CODE,
+        parserExitCode,
+        null,
+        parserStdout,
+        parserStderr,
+        null,
+        null,
+        null
+      ),
+      xmlInput: null,
+      parserExitCode,
+      parserStdout,
+      parserStderr,
+    };
+  }
+
+  if (compilerResult.exitCode !== 0 || compilerResult.xmlOutput === null) {
+    return {
+      outcome: executedReport(
+        TestResult.PASSED,
+        parserExitCode,
+        null,
+        parserStdout,
+        parserStderr,
+        null,
+        null,
+        null
+      ),
+      xmlInput: null,
+      parserExitCode,
+      parserStdout,
+      parserStderr,
+    };
+  }
+
+  return {
+    outcome: null,
+    xmlInput: compilerResult.xmlOutput,
+    parserExitCode,
+    parserStdout,
+    parserStderr,
+  };
+}
+
+async function executeTestCase(
+  testCase: TestCaseDefinition,
+  args: CliArguments
+): Promise<ExecutionOutcome> {
+  if (testCase.test_type === TestCaseType.PARSE_ONLY) {
     if (args.compiler_path === null) {
-      return {
-        report: null,
-        unexecuted: new UnexecutedReason(
-            UnexecutedReasonCode.CANNOT_EXECUTE,
-            "Compiler path is not configured."
-        ),
-      };
+      return cannotExecute("Compiler path is not configured.");
     }
 
-    const compilerResult = await runCompiler(args.compiler_path, testCase);
+    return executeParseOnlyTest(testCase, args.compiler_path);
+  }
 
-    if (compilerResult.spawnError !== null) {
-      return {
-        report: null,
-        unexecuted: new UnexecutedReason(
-            UnexecutedReasonCode.CANNOT_EXECUTE,
-            `Failed to execute compiler: ${compilerResult.spawnError}`
-        ),
-      };
-    }
+  const prepared = await prepareXmlInputForExecutableTest(testCase, args.compiler_path);
+  if (prepared.outcome !== null) {
+    return prepared.outcome;
+  }
 
-    parserExitCode = compilerResult.exitCode;
-    parserStdout = compilerResult.stdout;
-    parserStderr = compilerResult.stderr;
-
-    if (!exitCodeMatches(parserExitCode, testCase.expected_parser_exit_codes)) {
-      return {
-        report: new TestCaseReport(
-            TestResult.UNEXPECTED_PARSER_EXIT_CODE,
-            parserExitCode,
-            null,
-            parserStdout,
-            parserStderr,
-            null,
-            null,
-            null
-        ),
-        unexecuted: null,
-      };
-    }
-
-    if (compilerResult.exitCode !== 0 || compilerResult.xmlOutput === null) {
-      return {
-        report: new TestCaseReport(
-            TestResult.PASSED,
-            parserExitCode,
-            null,
-            parserStdout,
-            parserStderr,
-            null,
-            null,
-            null
-        ),
-        unexecuted: null,
-      };
-    }
-
-    xmlInput = compilerResult.xmlOutput;
+  if (prepared.xmlInput === null) {
+    return cannotExecute("Missing XML input for interpreter execution.");
   }
 
   if (args.interpreter_path === null) {
-    return {
-      report: null,
-      unexecuted: new UnexecutedReason(
-          UnexecutedReasonCode.CANNOT_EXECUTE,
-          "Interpreter path is not configured."
-      ),
-    };
+    return cannotExecute("Interpreter path is not configured.");
   }
 
   const stdinInput = loadOptionalStdin(testCase);
-  const interpreterResult = await runInterpreter(args.interpreter_path, xmlInput, stdinInput);
+  const interpreterResult = await runInterpreter(
+    args.interpreter_path,
+    prepared.xmlInput,
+    stdinInput
+  );
 
   if (interpreterResult.spawnError !== null) {
-    return {
-      report: null,
-      unexecuted: new UnexecutedReason(
-          UnexecutedReasonCode.CANNOT_EXECUTE,
-          `Failed to execute interpreter: ${interpreterResult.spawnError}`
-      ),
-    };
+    return cannotExecute(`Failed to execute interpreter: ${interpreterResult.spawnError}`);
   }
 
-  interpreterExitCode = interpreterResult.exitCode;
-  interpreterStdout = interpreterResult.stdout;
-  interpreterStderr = interpreterResult.stderr;
+  const interpreterExitCode = interpreterResult.exitCode;
+  const interpreterStdout = interpreterResult.stdout;
+  const interpreterStderr = interpreterResult.stderr;
 
   if (!exitCodeMatches(interpreterExitCode, testCase.expected_interpreter_exit_codes)) {
-    return {
-      report: new TestCaseReport(
-          TestResult.UNEXPECTED_INTERPRETER_EXIT_CODE,
-          parserExitCode,
-          interpreterExitCode,
-          parserStdout,
-          parserStderr,
-          interpreterStdout,
-          interpreterStderr,
-          null
-      ),
-      unexecuted: null,
-    };
+    return executedReport(
+      TestResult.UNEXPECTED_INTERPRETER_EXIT_CODE,
+      prepared.parserExitCode,
+      interpreterExitCode,
+      prepared.parserStdout,
+      prepared.parserStderr,
+      interpreterStdout,
+      interpreterStderr,
+      null
+    );
   }
 
   if (testCase.expected_stdout_file !== null && interpreterExitCode === 0) {
     const diffResult = await runDiff(testCase.expected_stdout_file, interpreterStdout);
 
     if (diffResult.spawnError !== null) {
-      return {
-        report: null,
-        unexecuted: new UnexecutedReason(
-            UnexecutedReasonCode.CANNOT_EXECUTE,
-            `Failed to execute diff: ${diffResult.spawnError}`
-        ),
-      };
+      return cannotExecute(`Failed to execute diff: ${diffResult.spawnError}`);
     }
 
     if (diffResult.exitCode !== 0) {
-      diffOutput = diffResult.stdout.length > 0 ? diffResult.stdout : diffResult.stderr;
+      const diffOutput = diffResult.stdout.length > 0 ? diffResult.stdout : diffResult.stderr;
 
-      return {
-        report: new TestCaseReport(
-            TestResult.INTERPRETER_RESULT_DIFFERS,
-            parserExitCode,
-            interpreterExitCode,
-            parserStdout,
-            parserStderr,
-            interpreterStdout,
-            interpreterStderr,
-            diffOutput
-        ),
-        unexecuted: null,
-      };
-    }
-  }
-
-  return {
-    report: new TestCaseReport(
-        TestResult.PASSED,
-        parserExitCode,
+      return executedReport(
+        TestResult.INTERPRETER_RESULT_DIFFERS,
+        prepared.parserExitCode,
         interpreterExitCode,
-        parserStdout,
-        parserStderr,
+        prepared.parserStdout,
+        prepared.parserStderr,
         interpreterStdout,
         interpreterStderr,
         diffOutput
-    ),
-    unexecuted: null,
-  };
+      );
+    }
+  }
+
+  return executedReport(
+    TestResult.PASSED,
+    prepared.parserExitCode,
+    interpreterExitCode,
+    prepared.parserStdout,
+    prepared.parserStderr,
+    interpreterStdout,
+    interpreterStderr,
+    null
+  );
 }
 
-function exitCodeMatches(actualExitCode: number | null, expectedExitCodes: number[] | null): boolean {
+function exitCodeMatches(
+  actualExitCode: number | null,
+  expectedExitCodes: number[] | null
+): boolean {
   if (actualExitCode === null || expectedExitCodes === null) {
     return false;
   }
@@ -762,7 +822,10 @@ function exitCodeMatches(actualExitCode: number | null, expectedExitCodes: numbe
   return expectedExitCodes.includes(actualExitCode);
 }
 
-async function runDiff(expectedOutputPath: string, actualOutput: string): Promise<DiffExecutionResult> {
+async function runDiff(
+  expectedOutputPath: string,
+  actualOutput: string
+): Promise<DiffExecutionResult> {
   const tempDir = mkdtempSync(join(tmpdir(), "sol26-diff-"));
   const actualPath = join(tempDir, "actual.out");
 
@@ -782,35 +845,33 @@ async function runDiff(expectedOutputPath: string, actualOutput: string): Promis
 }
 
 function addExecutedResult(
-    results: Record<string, CategoryReport>,
-    testCase: TestCaseDefinition,
-    testCaseReport: TestCaseReport
+  results: Record<string, CategoryReport>,
+  testCase: TestCaseDefinition,
+  testCaseReport: TestCaseReport
 ): void {
   const existingCategory = results[testCase.category];
   const passedPoints = testCaseReport.result === TestResult.PASSED ? testCase.points : 0;
 
   if (existingCategory === undefined) {
-    results[testCase.category] = new CategoryReport(
-        testCase.points,
-        passedPoints,
-        { [testCase.name]: testCaseReport }
-    );
+    results[testCase.category] = new CategoryReport(testCase.points, passedPoints, {
+      [testCase.name]: testCaseReport,
+    });
     return;
   }
 
   results[testCase.category] = new CategoryReport(
-      existingCategory.total_points + testCase.points,
-      existingCategory.passed_points + passedPoints,
-      {
-        ...existingCategory.test_results,
-        [testCase.name]: testCaseReport,
-      }
+    existingCategory.total_points + testCase.points,
+    existingCategory.passed_points + passedPoints,
+    {
+      ...existingCategory.test_results,
+      [testCase.name]: testCaseReport,
+    }
   );
 }
 
 async function executeSelectedTests(
-    executableTests: TestCaseDefinition[],
-    args: CliArguments
+  executableTests: TestCaseDefinition[],
+  args: CliArguments
 ): Promise<{
   results: Record<string, CategoryReport>;
   unexecuted: Record<string, UnexecutedReason>;
@@ -835,15 +896,15 @@ async function executeSelectedTests(
 }
 
 function applyDryRun(
-    selectedForExecution: TestCaseDefinition[],
-    existingUnexecuted: Record<string, UnexecutedReason>
+  selectedForExecution: TestCaseDefinition[],
+  existingUnexecuted: Record<string, UnexecutedReason>
 ): Record<string, UnexecutedReason> {
   const unexecuted: Record<string, UnexecutedReason> = { ...existingUnexecuted };
 
   for (const testCase of selectedForExecution) {
     unexecuted[testCase.name] = new UnexecutedReason(
-        UnexecutedReasonCode.OTHER,
-        "Execution skipped because --dry-run was used."
+      UnexecutedReasonCode.OTHER,
+      "Execution skipped because --dry-run was used."
     );
   }
 
@@ -859,6 +920,82 @@ function parseIntegerField(rawValue: string, fieldName: string): number {
   return Number.parseInt(trimmed, 10);
 }
 
+function parseMetadataLine(
+  rawLine: string,
+  state: {
+    description: string | null;
+    hasDescription: boolean;
+    category: string | null;
+    points: number | null;
+    parserExitCodes: number[];
+    interpreterExitCodes: number[];
+  }
+): void {
+  const line = rawLine.trim();
+
+  if (line.length === 0) {
+    return;
+  }
+
+  if (line.startsWith("***")) {
+    if (state.hasDescription) {
+      throw new Error("Duplicate description (***).");
+    }
+
+    state.hasDescription = true;
+    state.description = line.slice(3).trim() || null;
+    return;
+  }
+
+  if (line.startsWith("+++")) {
+    if (state.category !== null) {
+      throw new Error("Duplicate category (+++).");
+    }
+
+    state.category = line.slice(3).trim();
+    return;
+  }
+
+  if (line.startsWith(">>>")) {
+    if (state.points !== null) {
+      throw new Error("Duplicate points (>>>).");
+    }
+
+    state.points = parseIntegerField(line.slice(3), ">>> points");
+    return;
+  }
+
+  if (line.startsWith("!C!")) {
+    state.parserExitCodes.push(parseIntegerField(line.slice(3), "!C! exit code"));
+    return;
+  }
+
+  if (line.startsWith("!I!")) {
+    state.interpreterExitCodes.push(parseIntegerField(line.slice(3), "!I! exit code"));
+    return;
+  }
+
+  throw new Error(`Unknown metadata line: ${rawLine}`);
+}
+
+function validateParsedTestFile(
+  category: string | null,
+  points: number | null,
+  source: string
+): void {
+  if (category === null || category.trim() === "") {
+    throw new Error("Missing required category (+++).");
+  }
+
+  if (points === null) {
+    throw new Error("Missing required points (>>>).");
+  }
+
+  if (source.trim() === "") {
+    throw new Error("Missing source code body.");
+  }
+}
+
 function parseTestFile(testFilePath: string): ParsedTestFile {
   const content = readFileSync(testFilePath, "utf8");
   const lines = content.split(/\r?\n/);
@@ -872,80 +1009,35 @@ function parseTestFile(testFilePath: string): ParsedTestFile {
   const sourceLines = lines.slice(separatorIndex + 1);
   const source = sourceLines.join("\n");
 
-  let description: string | null = null;
-  let hasDescription = false;
-  let category: string | null = null;
-  let points: number | null = null;
-  const parserExitCodes: number[] = [];
-  const interpreterExitCodes: number[] = [];
+  const state = {
+    description: null as string | null,
+    hasDescription: false,
+    category: null as string | null,
+    points: null as number | null,
+    parserExitCodes: [] as number[],
+    interpreterExitCodes: [] as number[],
+  };
 
   for (const rawLine of metadataLines) {
-    const line = rawLine.trim();
-
-    if (line.length === 0) {
-      continue;
-    }
-
-    if (line.startsWith("***")) {
-      if (hasDescription) {
-        throw new Error("Duplicate description (***).");
-      }
-
-      hasDescription = true;
-      description = line.slice(3).trim() || null;
-      continue;
-    }
-
-    if (line.startsWith("+++")) {
-      if (category !== null) {
-        throw new Error("Duplicate category (+++).");
-      }
-
-      category = line.slice(3).trim();
-      continue;
-    }
-
-    if (line.startsWith(">>>")) {
-      if (points !== null) {
-        throw new Error("Duplicate points (>>>).");
-      }
-
-      points = parseIntegerField(line.slice(3), ">>> points");
-      continue;
-    }
-
-    if (line.startsWith("!C!")) {
-      parserExitCodes.push(parseIntegerField(line.slice(3), "!C! exit code"));
-      continue;
-    }
-
-    if (line.startsWith("!I!")) {
-      interpreterExitCodes.push(parseIntegerField(line.slice(3), "!I! exit code"));
-      continue;
-    }
-
-    throw new Error(`Unknown metadata line: ${rawLine}`);
+    parseMetadataLine(rawLine, state);
   }
 
-  if (category === null || category.trim() === "") {
-    throw new Error("Missing required category (+++).");
-  }
+  validateParsedTestFile(state.category, state.points, source);
 
-  if (points === null) {
-    throw new Error("Missing required points (>>>).");
-  }
+  const category = state.category;
+  const points = state.points;
 
-  if (source.trim() === "") {
-    throw new Error("Missing source code body.");
+  if (category === null || points === null) {
+    throw new Error("Internal error: validated test file still has null category or points.");
   }
 
   return {
-    description,
+    description: state.description,
     category,
     points,
     source,
-    parserExitCodes,
-    interpreterExitCodes,
+    parserExitCodes: state.parserExitCodes,
+    interpreterExitCodes: state.interpreterExitCodes,
   };
 }
 
@@ -978,9 +1070,9 @@ function determineTestType(parsed: ParsedTestFile, testFilePath: string): TestCa
   const lowerPath = testFilePath.toLowerCase();
 
   const looksLikeXmlSource =
-      lowerPath.endsWith(".xml.test") ||
-      parsed.source.trimStart().startsWith("<?xml") ||
-      parsed.source.trimStart().startsWith("<program");
+    lowerPath.endsWith(".xml.test") ||
+    parsed.source.trimStart().startsWith("<?xml") ||
+    parsed.source.trimStart().startsWith("<program");
 
   if (looksLikeXmlSource) {
     if (hasParser) {
@@ -997,7 +1089,7 @@ function determineTestType(parsed: ParsedTestFile, testFilePath: string): TestCa
   if (hasParser && hasInterpreter) {
     if (parsed.parserExitCodes.length !== 1 || parsed.parserExitCodes[0] !== 0) {
       throw new Error(
-          "Cannot determine test type: combined test requires the only compiler exit code to be 0."
+        "Cannot determine test type: combined test requires the only compiler exit code to be 0."
       );
     }
 
@@ -1010,7 +1102,7 @@ function determineTestType(parsed: ParsedTestFile, testFilePath: string): TestCa
 
   if (hasInterpreter) {
     throw new Error(
-        "Cannot determine test type: non-XML test with only interpreter exit codes is ambiguous."
+      "Cannot determine test type: non-XML test with only interpreter exit codes is ambiguous."
     );
   }
 
@@ -1037,9 +1129,9 @@ function loadDiscoveredTests(testsDir: string, recursive: boolean): LoadTestsRes
         points: parsed.points,
         test_source_path: testFilePath,
         expected_parser_exit_codes:
-            parsed.parserExitCodes.length > 0 ? parsed.parserExitCodes : null,
+          parsed.parserExitCodes.length > 0 ? parsed.parserExitCodes : null,
         expected_interpreter_exit_codes:
-            parsed.interpreterExitCodes.length > 0 ? parsed.interpreterExitCodes : null,
+          parsed.interpreterExitCodes.length > 0 ? parsed.interpreterExitCodes : null,
       });
 
       discoveredTestCases.push(withSidecars(testCase));
@@ -1047,10 +1139,10 @@ function loadDiscoveredTests(testsDir: string, recursive: boolean): LoadTestsRes
       const message = error instanceof Error ? error.message : String(error);
 
       const reasonCode = message.startsWith("Cannot determine test type")
+        ? UnexecutedReasonCode.CANNOT_DETERMINE_TYPE
+        : message.includes("XML test must not declare compiler exit codes")
           ? UnexecutedReasonCode.CANNOT_DETERMINE_TYPE
-          : message.includes("XML test must not declare compiler exit codes")
-              ? UnexecutedReasonCode.CANNOT_DETERMINE_TYPE
-              : UnexecutedReasonCode.MALFORMED_TEST_CASE_FILE;
+          : UnexecutedReasonCode.MALFORMED_TEST_CASE_FILE;
 
       unexecuted[testName] = new UnexecutedReason(reasonCode, message);
     }
@@ -1082,20 +1174,20 @@ async function main(): Promise<void> {
 
   const loadResult = loadDiscoveredTests(args.tests_dir, args.recursive);
   const unexecutedAfterFiltering = applyFilters(
-      loadResult.discoveredTestCases,
-      loadResult.unexecuted,
-      args
+    loadResult.discoveredTestCases,
+    loadResult.unexecuted,
+    args
   );
 
   const executionPreparation = prepareExecutionSet(
-      loadResult.discoveredTestCases,
-      unexecutedAfterFiltering,
-      args
+    loadResult.discoveredTestCases,
+    unexecutedAfterFiltering,
+    args
   );
 
   const executed = args.dry_run
-      ? { results: {}, unexecuted: {} }
-      : await executeSelectedTests(executionPreparation.selectedForExecution, args);
+    ? { results: {}, unexecuted: {} }
+    : await executeSelectedTests(executionPreparation.selectedForExecution, args);
 
   const mergedUnexecuted: Record<string, UnexecutedReason> = {
     ...executionPreparation.unexecuted,
@@ -1103,8 +1195,8 @@ async function main(): Promise<void> {
   };
 
   const unexecuted = args.dry_run
-      ? applyDryRun(executionPreparation.selectedForExecution, mergedUnexecuted)
-      : mergedUnexecuted;
+    ? applyDryRun(executionPreparation.selectedForExecution, mergedUnexecuted)
+    : mergedUnexecuted;
 
   const report = new TestReport({
     discovered_test_cases: loadResult.discoveredTestCases,
